@@ -1,14 +1,19 @@
-/* Pure ES5: shared by macOS JXA and the development tests. No packages. */
+/* Platform-independent validation and execution. No packages. */
 var MusicMVP = (function () {
     'use strict';
     var fields = {
         name: 'string', artist: 'string', album: 'string', albumArtist: 'string',
         composer: 'string', genre: 'string', year: 'number', trackNumber: 'number',
-        trackCount: 'number', discNumber: 'number', discCount: 'number', compilation: 'boolean'
+        trackCount: 'number', discNumber: 'number', discCount: 'number', compilation: 'boolean', lyrics: 'string'
     };
     function fail(message) { throw new Error(message); }
     function own(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
     function object(o) { return o !== null && typeof o === 'object' && !Array.isArray(o); }
+    function normalizeLyrics(s) { var v=s.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').replace(/\n+$/, '');return v.trim()?v:''; }
+    function lyricsText(s) {
+        if (typeof s !== 'string' || !s.trim() || s.length > 100000 || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(s) || /<!doctype\s+html|<html[\s>]/i.test(s)) fail('Lyrics must be nonempty plain text (up to 100000 characters)');
+        return normalizeLyrics(s);
+    }
     function keysOnly(o, allowed, label) {
         if (!object(o)) fail(label + ': expected object');
         Object.keys(o).forEach(function (k) { if (allowed.indexOf(k) < 0) fail(label + ': unsupported field ' + k); });
@@ -22,7 +27,8 @@ var MusicMVP = (function () {
         Object.keys(o).forEach(function (k) {
             var v = o[k];
             if (typeof v !== fields[k]) fail(k + ': invalid type');
-            if (typeof v === 'string' && (!v.trim() || v.length > 2000 || /[\x00-\x1f]/.test(v))) fail(k + ': invalid text');
+            if (k === 'lyrics') lyricsText(v);
+            else if (typeof v === 'string' && (!v.trim() || v.length > 2000 || /[\x00-\x1f]/.test(v))) fail(k + ': invalid text');
             if (typeof v === 'number' && (!isFinite(v) || v % 1 || v < 1 || v > 9999)) fail(k + ': invalid number');
         });
         return o;
@@ -35,41 +41,65 @@ var MusicMVP = (function () {
     function validateRequest(r) {
         keysOnly(r, ['version', 'description', 'defaults', 'tracks'], 'request');
         if (r.version !== 1) fail('Unsupported request version');
-        keysOnly(r.defaults || {}, ['genre'], 'defaults'); patch(r.defaults || {});
-        if (!Array.isArray(r.tracks) || !r.tracks.length || r.tracks.length > 20) fail('MVP accepts 1–20 tracks');
+        keysOnly(r.defaults || {}, Object.keys(fields).filter(function(k){return k!=='lyrics';}), 'defaults');patch(r.defaults || {});
+        if (!Array.isArray(r.tracks) || !r.tracks.length) fail('Request must contain at least one track');
         var seen = {};
         r.tracks.forEach(function (t) {
-            keysOnly(t, ['id', 'expect', 'set', 'fill', 'artwork_catalog_id', 'sources'], 'track');
+            keysOnly(t, ['id', 'expect', 'set', 'fill', 'artwork_file', 'lyrics_file', 'lyrics_url', 'lyrics_policy', 'sources'], 'track');
             var pid = id(t.id); if (seen[pid]) fail('Duplicate track ' + pid); seen[pid] = true;
             keysOnly(t.expect, ['name', 'artist'], 'expect');
-            if (!t.expect.name || !t.expect.artist) fail('Both expect.name and expect.artist are required');
-            patch(t.expect); patch(t.set || {}); patch(t.fill || {});
-            if (t.artwork_catalog_id !== undefined && (!Number.isSafeInteger(t.artwork_catalog_id) || t.artwork_catalog_id < 1)) fail('Invalid catalogue ID');
+            ['name','artist'].forEach(function(k){if(typeof t.expect[k]!=='string'||t.expect[k].length>2000||/[\x00-\x1f]/.test(t.expect[k]))fail('expect.'+k+' must be the current string (empty is allowed)');});
+            patch(t.set || {}); patch(t.fill || {});
+            if (own(t, 'artwork_file')) {
+                if (typeof t.artwork_file === 'string') { if (!t.artwork_file.trim()) fail('Empty artwork path'); }
+                else {
+                    keysOnly(t.artwork_file, ['path', 'sha256', 'format', 'source_url', 'album'], 'artwork_file');
+                    var a = t.artwork_file;
+                    if (typeof a.path !== 'string' || !a.path.trim() || (a.sha256 !== undefined && !/^[a-f0-9]{64}$/.test(a.sha256)) || (a.format !== undefined && ['jpg','png'].indexOf(a.format) < 0) || (a.source_url !== undefined && (typeof a.source_url !== 'string' || !/^https:\/\//.test(a.source_url))) || (a.album !== undefined && (typeof a.album !== 'string' || !a.album.trim()))) fail('Invalid local artwork');
+                }
+            }
+            if (own(t,'lyrics_file') && (typeof t.lyrics_file !== 'string' || !t.lyrics_file.trim())) fail('lyrics_file must be a TXT path');
+            if (own(t,'lyrics_url') && (typeof t.lyrics_url !== 'string' || !/^https:\/\//.test(t.lyrics_url))) fail('lyrics_url must use HTTPS');
+            var externalLyrics = own(t,'lyrics_file') || own(t,'lyrics_url');
+            if (own(t,'lyrics_file') && own(t,'lyrics_url')) fail('Use one lyrics source');
+            if (externalLyrics && (own(t.set || {},'lyrics') || own(t.fill || {},'lyrics') || own(r.defaults || {},'lyrics'))) fail('External and inline lyrics cannot be combined');
+            if (own(t.set || {},'lyrics') && own(t.fill || {},'lyrics')) fail('Choose set.lyrics or fill.lyrics');
+            if (t.lyrics_policy !== undefined && (!externalLyrics || ['fill','replace'].indexOf(t.lyrics_policy)<0)) fail('lyrics_policy is fill or replace for an external source');
             if (t.sources !== undefined && (!Array.isArray(t.sources) || t.sources.some(function (u) { return typeof u !== 'string' || !/^https:\/\//.test(u); }))) fail('Invalid sources');
         });
         return r;
     }
     function changes(t, before, defaults) {
-        if (t.expect.name !== before.name || t.expect.artist !== before.artist) fail('Identity differs for ' + t.id + '; inspect the current track');
+        ['name', 'artist'].forEach(function (k) {
+            var current = before[k].normalize('NFC');
+            var original = t.expect[k].normalize('NFC');
+            var corrected = t.set && typeof t.set[k] === 'string' ? t.set[k].normalize('NFC') : (defaults && typeof defaults[k]==='string'?defaults[k].normalize('NFC'):original);
+            if (current !== original && current !== corrected) fail('Identity differs for ' + t.id + '; inspect the current track');
+        });
         var desired = {}, result = {}, combined = {};
         Object.keys(before).forEach(function (k) { combined[k] = before[k]; });
         Object.keys(t.fill || {}).forEach(function (k) { if (before[k] === '' || before[k] === 0 || before[k] === null) desired[k] = t.fill[k]; });
         Object.keys(defaults || {}).forEach(function (k) { desired[k] = defaults[k]; });
         Object.keys(t.set || {}).forEach(function (k) { desired[k] = t.set[k]; });
-        Object.keys(desired).forEach(function (k) { combined[k] = desired[k]; if (before[k] !== desired[k]) result[k] = desired[k]; });
+        Object.keys(desired).forEach(function (k) {
+            var value = k === 'lyrics' ? lyricsText(desired[k]) : desired[k];
+            combined[k] = value;
+            if (before[k] !== value) result[k] = value;
+        });
         ranges(combined);
         return result;
     }
     function validatePlan(p) {
         keysOnly(p, ['version', 'kind', 'created_at', 'library_id', 'tracks'], 'plan');
-        if (p.version !== 1 || p.kind !== 'music-mvp-plan') fail('Invalid plan');
+        if (p.version !== 1 || p.kind !== 'music-tags-plan') fail('Invalid plan; prepare a new plan with this tool');
         id(p.library_id);
-        if (!Array.isArray(p.tracks) || !p.tracks.length || p.tracks.length > 20) fail('Invalid plan size');
+        if (!Array.isArray(p.tracks) || !p.tracks.length) fail('Invalid plan size');
         var ids = {}, paths = {};
         p.tracks.forEach(function (t) {
             keysOnly(t, ['id', 'before', 'set', 'artwork', 'sources'], 'plan track');
             var pid = id(t.id); if (ids[pid]) fail('Duplicate ID'); ids[pid] = true;
-            keysOnly(t.before, ['metadata', 'path', 'sha256', 'artwork_count', 'duration'], 'before');
+            keysOnly(t.before, ['metadata', 'path', 'sha256', 'artwork_count', 'file_artwork_present', 'duration'], 'before');
+            if (t.before.file_artwork_present !== undefined && typeof t.before.file_artwork_present !== 'boolean') fail('Invalid file artwork flag');
             keysOnly(t.before.metadata, Object.keys(fields), 'before metadata');
             Object.keys(fields).forEach(function (k) { if (typeof t.before.metadata[k] !== fields[k]) fail('Incomplete before metadata: ' + k); });
             if (typeof t.before.path !== 'string' || t.before.path[0] !== '/' || !/\.(mp3|m4a)$/i.test(t.before.path)) fail('Only local MP3/M4A files are supported');
@@ -81,8 +111,10 @@ var MusicMVP = (function () {
             var combined = {}; Object.keys(t.before.metadata).forEach(function (k) { combined[k] = t.before.metadata[k]; });
             Object.keys(t.set).forEach(function (k) { combined[k] = t.set[k]; }); ranges(combined);
             if (t.artwork !== null) {
-                keysOnly(t.artwork, ['path', 'sha256', 'format', 'source_url', 'catalog_id'], 'artwork');
-                if (t.before.artwork_count !== 0) fail('MVP only adds missing artwork');
+                keysOnly(t.artwork, ['path', 'sha256', 'format', 'source_url', 'policy'], 'artwork');
+                if (t.artwork.policy === 'embed_missing') {
+                    if (t.before.file_artwork_present !== false || t.before.artwork_count > 1) fail('Embedded artwork already exists or Music has multiple pictures');
+                } else if (t.artwork.policy !== undefined || t.before.artwork_count !== 0) fail('Only missing artwork can be added');
                 if (typeof t.artwork.path !== 'string' || t.artwork.path[0] !== '/' || !/^[a-f0-9]{64}$/.test(t.artwork.sha256) || ['jpg', 'png'].indexOf(t.artwork.format) < 0) fail('Invalid artwork asset');
             }
         });
@@ -90,6 +122,7 @@ var MusicMVP = (function () {
     }
     function sameSnapshot(a, b) {
         return a.path === b.path && a.sha256 === b.sha256 && a.artwork_count === b.artwork_count &&
+            (a.file_artwork_present === undefined || a.file_artwork_present === b.file_artwork_present) &&
             a.duration === b.duration && Object.keys(fields).every(function (k) { return a.metadata[k] === b.metadata[k]; });
     }
     function execute(p, io) {
@@ -100,7 +133,7 @@ var MusicMVP = (function () {
             if (!sameSnapshot(t.before, io.snapshot(t.id))) fail('Stale plan: ' + t.id + '. Prepare a new plan.');
             if (t.artwork) io.checkArtwork(t.artwork);
         });
-        var log = {version: 1, kind: 'music-mvp-journal', status: 'started', started_at: new Date().toISOString(), library_id: p.library_id, tracks: []};
+        var log = {version: 1, kind: 'music-tags-journal', status: 'started', started_at: new Date().toISOString(), library_id: p.library_id, tracks: []};
         io.record(log);
         try {
             p.tracks.forEach(function (t, index) {
@@ -111,7 +144,8 @@ var MusicMVP = (function () {
                     entry.backup = io.backup(t.before.path, index, t.before.sha256); io.record(log);
                     Object.keys(t.set).forEach(function (k) {
                         entry.steps.push({field: k, value: t.set[k], status: 'attempting'}); io.record(log);
-                        io.writeField(t.id, k, t.set[k]);
+                        try { io.writeField(t.id, k, t.set[k]); }
+                        catch (e) { fail('Track ' + t.id + ', field ' + k + ': ' + String(e.message || e)); }
                         if (io.readField(t.id, k) !== t.set[k]) fail('Music did not retain ' + k + ' for ' + t.id);
                         entry.steps[entry.steps.length - 1].status = 'music_verified'; io.record(log);
                     });
@@ -127,7 +161,7 @@ var MusicMVP = (function () {
                     var expected = own(t.set, k) ? t.set[k] : t.before.metadata[k];
                     if (entry.after.metadata[k] !== expected) fail('Unexpected final value: ' + k);
                 });
-                if (entry.after.artwork_count !== t.before.artwork_count + (t.artwork ? 1 : 0)) fail('Unexpected artwork count');
+                if (entry.after.artwork_count !== (t.artwork ? Math.max(1, t.before.artwork_count) : t.before.artwork_count)) fail('Unexpected artwork count');
                 entry.file_verification = io.verifyFile(entry.after.path, t.set, Boolean(t.artwork));
                 if (!entry.file_verification.ok) fail('File verification failed; inspect the journal.');
                 entry.status = 'verified'; io.record(log);
@@ -141,15 +175,18 @@ var MusicMVP = (function () {
     }
     function preview(p) {
         validatePlan(p);
-        var out = ['Music MVP — ' + p.tracks.length + ' tracks; library ' + p.library_id];
+        var out = ['Music Tags — ' + p.tracks.length + ' tracks'];
         p.tracks.forEach(function (t) {
             out.push('\n' + t.before.metadata.artist + ' — ' + t.before.metadata.name + ' [' + t.id + ']');
-            Object.keys(t.set).forEach(function (k) { out.push('  ' + k + ': ' + JSON.stringify(t.before.metadata[k]) + ' → ' + JSON.stringify(t.set[k])); });
-            if (t.artwork) out.push('  artwork: missing → ' + t.artwork.path);
+            Object.keys(t.set).forEach(function (k) {
+                if (k === 'lyrics') out.push('  lyrics: ' + t.before.metadata[k].length + ' → ' + t.set[k].length + ' characters (full text in plan)');
+                else out.push('  ' + k + ': ' + JSON.stringify(t.before.metadata[k]) + ' → ' + JSON.stringify(t.set[k]));
+            });
+            if (t.artwork) out.push('  artwork: missing in file → ' + t.artwork.path);
             if (!Object.keys(t.set).length && !t.artwork) out.push('  No changes.');
         });
         return out.join('\n');
     }
-    return {fields: fields, id: id, validateRequest: validateRequest, changes: changes, validatePlan: validatePlan, sameSnapshot: sameSnapshot, execute: execute, preview: preview};
+    return {fields: fields, id: id, normalizeLyrics: normalizeLyrics, lyricsText: lyricsText, validateRequest: validateRequest, changes: changes, validatePlan: validatePlan, sameSnapshot: sameSnapshot, execute: execute, preview: preview};
 }());
 if (typeof module !== 'undefined') module.exports = MusicMVP;
