@@ -1,0 +1,50 @@
+# macOS / editors
+.DS_Store
+._*
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local secrets (keep a documented example)
+.env
+.env.*
+!.env.example
+
+# Generated execution plans and inspection results at the project root
+/plan*.json
+/*-plan*.json
+/snapshot*.json
+/*-snapshot*.json
+/inspect*.json
+/*-result*.json
+
+# Batch runs, downloaded runtime assets, journals and full file backups
+/french-run*/
+*.journal.json
+*.json.assets/
+*.json.backups/
+
+# Generated test output
+/tests/pilot-simulation.json
+/tests/native-probe/
+/tests/native-*/
+
+# Audio files do not belong in the source repository
+*.mp3
+*.m4a
+*.m4p
+*.aac
+*.flac
+*.wav
+*.aif
+*.aiff
+*.ogg
+*.opus
+*.movpkg/
+
+# Logs / distribution packages
+*.log
+*.zip
+
+# Keep source JSON in examples/ and french/, and curated french/covers/ images.

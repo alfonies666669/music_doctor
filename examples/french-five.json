@@ -1,0 +1,129 @@
+{
+  "version": 1,
+  "description": "Five verified French tracks; existing artwork/composer preserved. Prepared from French audit 2026-11-20.",
+  "defaults": {
+    "genre": "French Hip-Hop"
+  },
+  "tracks": [
+    {
+      "id": "735F11D3D03C69A6",
+      "expect": {
+        "name": "Goulag",
+        "artist": "Kaaris"
+      },
+      "set": {
+        "album": "2.7.0",
+        "albumArtist": "Kaaris",
+        "year": 2020,
+        "trackNumber": 3,
+        "trackCount": 20,
+        "discNumber": 1,
+        "discCount": 1
+      },
+      "fill": {
+        "composer": "Boumidjal, Holomobb"
+      },
+      "artwork_catalog_id": 1544794825,
+      "sources": [
+        "https://music.apple.com/fr/album/goulag/1544794808?i=1544794825&uo=4",
+        "https://www.qobuz.com/fr-fr/album/270-kaaris/j9p22vf5gg0rc"
+      ]
+    },
+    {
+      "id": "6EBE236014BCF430",
+      "expect": {
+        "name": "Mandalorian",
+        "artist": "Kaaris"
+      },
+      "set": {
+        "album": "2.7.0",
+        "albumArtist": "Kaaris",
+        "year": 2020,
+        "trackNumber": 2,
+        "trackCount": 20,
+        "discNumber": 1,
+        "discCount": 1
+      },
+      "fill": {
+        "composer": "KozBeatz"
+      },
+      "artwork_catalog_id": 1544794819,
+      "sources": [
+        "https://music.apple.com/fr/album/mandalorian/1544794808?i=1544794819&uo=4",
+        "https://www.qobuz.com/fr-fr/album/270-kaaris/j9p22vf5gg0rc"
+      ]
+    },
+    {
+      "id": "8F19BC26D27C518A",
+      "expect": {
+        "name": "Paris c'est magique",
+        "artist": "Leto"
+      },
+      "set": {
+        "album": "100 visages",
+        "albumArtist": "Leto",
+        "year": 2020,
+        "trackNumber": 8,
+        "trackCount": 15,
+        "discNumber": 1,
+        "discCount": 1
+      },
+      "fill": {
+        "composer": "Junior Alaprod, Wladimir Pariente"
+      },
+      "artwork_catalog_id": 1525245749,
+      "sources": [
+        "https://music.apple.com/fr/album/paris-cest-magique/1525245731?i=1525245749&uo=4",
+        "https://www.youtube.com/watch?v=1ARX3GzmqnA"
+      ]
+    },
+    {
+      "id": "CEBA4B3A037D2E44",
+      "expect": {
+        "name": "Euro",
+        "artist": "SCH"
+      },
+      "set": {
+        "album": "JVLIVS II",
+        "albumArtist": "SCH",
+        "year": 2021,
+        "trackNumber": 10,
+        "trackCount": 18,
+        "discNumber": 1,
+        "discCount": 1
+      },
+      "fill": {
+        "composer": "Meryl, Enigma"
+      },
+      "artwork_catalog_id": 1556049028,
+      "sources": [
+        "https://music.apple.com/fr/album/euro/1556048881?i=1556049028&uo=4",
+        "https://www.qobuz.com/us-en/album/jvlivs-ii-sch/k7g0m2mgt6m5b"
+      ]
+    },
+    {
+      "id": "4A9704EF80CB310B",
+      "expect": {
+        "name": "Akimbo",
+        "artist": "Ziak"
+      },
+      "set": {
+        "album": "Akimbo",
+        "albumArtist": "Ziak",
+        "year": 2021,
+        "trackNumber": 3,
+        "trackCount": 16,
+        "discNumber": 1,
+        "discCount": 1
+      },
+      "fill": {
+        "composer": "Hellboy, Focus Beatz"
+      },
+      "artwork_catalog_id": 1590859227,
+      "sources": [
+        "https://music.apple.com/fr/album/akimbo/1590858955?i=1590859227&uo=4",
+        "https://music.apple.com/us/song/1590859227"
+      ]
+    }
+  ]
+}

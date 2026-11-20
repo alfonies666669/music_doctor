@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+if [ "$(uname -s)" != Darwin ]; then
+  echo 'Music MVP requires macOS and Music.app. No changes were made.' >&2
+  exit 1
+fi
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec /usr/bin/osascript -l JavaScript "$ROOT/jxa.js" "$ROOT" "$@"
