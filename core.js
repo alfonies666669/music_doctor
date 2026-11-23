@@ -187,7 +187,7 @@ var MusicMVP = (function () {
     }
     function preview(p) {
         validatePlan(p);
-        var out = ['Music Tags — ' + p.tracks.length + ' tracks'];
+        var out = ['Music Doctor — ' + p.tracks.length + ' tracks'];
         p.tracks.forEach(function (t) {
             out.push('\n' + t.before.metadata.artist + ' — ' + t.before.metadata.name + ' [' + t.id + ']');
             Object.keys(t.set).forEach(function (k) {
@@ -282,7 +282,7 @@ var MusicMVP = (function () {
             if (row.favorite === true) favorites++; else if (row.favorite !== false) unknownFavorites++;
         });
         var count = limit === null ? rows.length : Math.min(limit, rows.length);
-        var out = ['Music Tags — ' + rows.length + ' tracks',
+        var out = ['Music Doctor — ' + rows.length + ' tracks',
             'Duration: ' + time(total) + (unknownTime ? ' (unknown: ' + unknownTime + ')' : '') + ' | Favorites: ' + favorites + (unknownFavorites ? ' (unknown: ' + unknownFavorites + ')' : ''),
             '\nShowing ' + count + '/' + rows.length + ':'];
         rows.slice(0, count).forEach(function (row, index) {

@@ -47,6 +47,6 @@
 *.log
 *.zip
 
-# Keep source JSON in examples/ and french/, and curated french/covers/ images.
+# User requests, audio assets and generated runs stay outside source control.
 /runs/
 /local/

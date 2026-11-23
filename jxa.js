@@ -1,4 +1,4 @@
-/* macOS-only adapter. Run with the adjacent music-mvp launcher. */
+/* macOS-only adapter. Run with the adjacent music-tags launcher. */
 ObjC.import('Foundation');
 ObjC.import('AppKit');
 var TOOL_VERSION = '0.8.0';
@@ -214,21 +214,21 @@ function musicIO(core, root) {
     };
 }
 function usage() {
-    return 'Music Tags '+TOOL_VERSION+' — macOS, local MP3/M4A, no external packages\n' +
+    return 'Music Doctor '+TOOL_VERSION+' — macOS, local MP3/M4A, no external packages\n' +
         '  ./music-tags doctor\n' +
-        '  ./music-tags snapshot "Playlist name" snapshot.json  (or --all)\n' +
-        '  ./music-tags snapshot --genre "Custom Genre" snapshot.json\n' +
+        '  ./music-tags snapshot [--playlist "Playlist name" | --all] [filters] [request.json]\n' +
+        '  ./music-tags snapshot --genre "Custom Genre" [request.json]\n' +
         '  ./music-tags snapshot --artist \'Bushido OR Fler\'\n' +
         '  ./music-tags snapshot --artist \'Bushido OR Fler\' request.json\n' +
         '  ./music-tags snapshot --help\n' +
-        '  ./music-tags audit snapshot.json [report.json]\n' +
+        '  ./music-tags audit request-or-snapshot.json [report.json]\n' +
         '  ./music-tags validate request.json\n' +
         '  ./music-tags prepare request.json runs/plan.json\n' +
         '  ./music-tags preview runs/plan.json\n' +
         '  ./music-tags apply runs/plan.json\n' +
         '  ./music-tags status runs/plan.json\n' +
         '  ./music-tags inspect runs/plan.json\n' +
-        'Only apply writes music. Text/cover data must be supplied in the request.';
+        'Only apply writes music. No snapshot output path = console preview; with a path = editable request.\nText/cover data must be supplied in the request.';
 }
 function snapshotUsage() {
     return 'Snapshot selection (read-only):\n' +
@@ -305,7 +305,7 @@ function snapshotCommand(selection, io, core, filters) {
     return summary + '\nSaved editable request: ' + destination + '\nEdit set values; null means leave unchanged. No Music fields changed.';
 }
 function auditPreview(report) {
-    var a = report.artwork, out = ['Music Tags audit — ' + report.total + ' records; readable: ' + report.readable + '; errors: ' + report.errors.length,
+    var a = report.artwork, out = ['Music Doctor audit — ' + report.total + ' records; readable: ' + report.readable + '; errors: ' + report.errors.length,
         'Embedded artwork: ' + a.embedded + '; missing: ' + a.missingEmbedded + '; unknown: ' + a.unknownEmbedded,
         'Artwork in Music: ' + a.inMusic + '; missing: ' + a.missingInMusic + '; unknown: ' + a.unknownInMusic,
         'Lyrics: ' + report.lyrics.present + '; missing: ' + report.lyrics.missing + '; unknown: ' + report.lyrics.unknown,
