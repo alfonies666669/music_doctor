@@ -22,10 +22,11 @@ var MusicMVP = (function () {
         if (typeof value !== 'string' || !/^[A-Fa-f0-9]{16}$/.test(value)) fail('Invalid Persistent ID');
         return value.toUpperCase();
     }
-    function patch(o) {
+    function patch(o, allowNull) {
         keysOnly(o, Object.keys(fields), 'metadata');
         Object.keys(o).forEach(function (k) {
             var v = o[k];
+            if (allowNull && v === null) return;
             if (typeof v !== fields[k]) fail(k + ': invalid type');
             if (k === 'lyrics') lyricsText(v);
             else if (typeof v === 'string' && (!v.trim() || v.length > 2000 || /[\x00-\x1f]/.test(v))) fail(k + ': invalid text');
@@ -45,12 +46,21 @@ var MusicMVP = (function () {
         if (!Array.isArray(r.tracks) || !r.tracks.length) fail('Request must contain at least one track');
         var seen = {};
         r.tracks.forEach(function (t) {
-            keysOnly(t, ['id', 'expect', 'set', 'fill', 'artwork_file', 'lyrics_file', 'lyrics_url', 'lyrics_policy', 'sources'], 'track');
+            keysOnly(t, ['id', 'expect', 'set', 'fill', 'artwork_file', 'lyrics_file', 'lyrics_url', 'lyrics_policy', 'sources', 'info'], 'track');
             var pid = id(t.id); if (seen[pid]) fail('Duplicate track ' + pid); seen[pid] = true;
             keysOnly(t.expect, ['name', 'artist'], 'expect');
             ['name','artist'].forEach(function(k){if(typeof t.expect[k]!=='string'||t.expect[k].length>2000||/[\x00-\x1f]/.test(t.expect[k]))fail('expect.'+k+' must be the current string (empty is allowed)');});
-            patch(t.set || {}); patch(t.fill || {});
-            if (own(t, 'artwork_file')) {
+            patch(t.set || {}, true); patch(t.fill || {}, true);
+            if (own(t, 'info')) {
+                keysOnly(t.info, ['duration', 'favorite', 'artwork_count', 'file_artwork_present', 'lyrics_present'], 'info');
+                Object.keys(t.info).forEach(function (k) {
+                    var v = t.info[k]; if (v === null) return;
+                    if (k === 'duration' || k === 'artwork_count') {
+                        if (typeof v !== 'number' || !isFinite(v) || v < 0 || (k === 'artwork_count' && !Number.isInteger(v))) fail('Invalid info.' + k);
+                    } else if (typeof v !== 'boolean') fail('Invalid info.' + k);
+                });
+            }
+            if (own(t, 'artwork_file') && t.artwork_file !== null) {
                 if (typeof t.artwork_file === 'string') { if (!t.artwork_file.trim()) fail('Empty artwork path'); }
                 else {
                     keysOnly(t.artwork_file, ['path', 'sha256', 'format', 'source_url', 'album'], 'artwork_file');
@@ -58,13 +68,15 @@ var MusicMVP = (function () {
                     if (typeof a.path !== 'string' || !a.path.trim() || (a.sha256 !== undefined && !/^[a-f0-9]{64}$/.test(a.sha256)) || (a.format !== undefined && ['jpg','png'].indexOf(a.format) < 0) || (a.source_url !== undefined && (typeof a.source_url !== 'string' || !/^https:\/\//.test(a.source_url))) || (a.album !== undefined && (typeof a.album !== 'string' || !a.album.trim()))) fail('Invalid local artwork');
                 }
             }
-            if (own(t,'lyrics_file') && (typeof t.lyrics_file !== 'string' || !t.lyrics_file.trim())) fail('lyrics_file must be a TXT path');
-            if (own(t,'lyrics_url') && (typeof t.lyrics_url !== 'string' || !/^https:\/\//.test(t.lyrics_url))) fail('lyrics_url must use HTTPS');
-            var externalLyrics = own(t,'lyrics_file') || own(t,'lyrics_url');
-            if (own(t,'lyrics_file') && own(t,'lyrics_url')) fail('Use one lyrics source');
-            if (externalLyrics && (own(t.set || {},'lyrics') || own(t.fill || {},'lyrics') || own(r.defaults || {},'lyrics'))) fail('External and inline lyrics cannot be combined');
-            if (own(t.set || {},'lyrics') && own(t.fill || {},'lyrics')) fail('Choose set.lyrics or fill.lyrics');
-            if (t.lyrics_policy !== undefined && (!externalLyrics || ['fill','replace'].indexOf(t.lyrics_policy)<0)) fail('lyrics_policy is fill or replace for an external source');
+            function active(o, k) { return own(o || {}, k) && o[k] !== null; }
+            var fileLyrics = active(t, 'lyrics_file'), urlLyrics = active(t, 'lyrics_url');
+            if (fileLyrics && (typeof t.lyrics_file !== 'string' || !t.lyrics_file.trim())) fail('lyrics_file must be a TXT path');
+            if (urlLyrics && (typeof t.lyrics_url !== 'string' || !/^https:\/\//.test(t.lyrics_url))) fail('lyrics_url must use HTTPS');
+            var externalLyrics = fileLyrics || urlLyrics;
+            if (fileLyrics && urlLyrics) fail('Use one lyrics source');
+            if (externalLyrics && (active(t.set,'lyrics') || active(t.fill,'lyrics'))) fail('External and inline lyrics cannot be combined');
+            if (active(t.set,'lyrics') && active(t.fill,'lyrics')) fail('Choose set.lyrics or fill.lyrics');
+            if (t.lyrics_policy !== undefined && t.lyrics_policy !== null && (!externalLyrics || ['fill','replace'].indexOf(t.lyrics_policy)<0)) fail('lyrics_policy is fill or replace for an external source');
             if (t.sources !== undefined && (!Array.isArray(t.sources) || t.sources.some(function (u) { return typeof u !== 'string' || !/^https:\/\//.test(u); }))) fail('Invalid sources');
         });
         return r;
@@ -78,9 +90,9 @@ var MusicMVP = (function () {
         });
         var desired = {}, result = {}, combined = {};
         Object.keys(before).forEach(function (k) { combined[k] = before[k]; });
-        Object.keys(t.fill || {}).forEach(function (k) { if (before[k] === '' || before[k] === 0 || before[k] === null) desired[k] = t.fill[k]; });
+        Object.keys(t.fill || {}).forEach(function (k) { if (t.fill[k] !== null && (before[k] === '' || before[k] === 0 || before[k] === null)) desired[k] = t.fill[k]; });
         Object.keys(defaults || {}).forEach(function (k) { desired[k] = defaults[k]; });
-        Object.keys(t.set || {}).forEach(function (k) { desired[k] = t.set[k]; });
+        Object.keys(t.set || {}).forEach(function (k) { if (t.set[k] !== null) desired[k] = t.set[k]; });
         Object.keys(desired).forEach(function (k) {
             var value = k === 'lyrics' ? lyricsText(desired[k]) : desired[k];
             combined[k] = value;
@@ -187,6 +199,101 @@ var MusicMVP = (function () {
         });
         return out.join('\n');
     }
-    return {fields: fields, id: id, normalizeLyrics: normalizeLyrics, lyricsText: lyricsText, validateRequest: validateRequest, changes: changes, validatePlan: validatePlan, sameSnapshot: sameSnapshot, execute: execute, preview: preview};
+    function genreKey(value) {
+        if (typeof value !== 'string' || !value.trim() || value.length > 2000 || /[\x00-\x1f]/.test(value)) fail('Genre must be a nonempty string');
+        return value.normalize('NFC').toLowerCase().replace(/\s+/g, ' ').trim();
+    }
+    function genreIDs(ids, genres, genre) {
+        var wanted = genreKey(genre);
+        if (!Array.isArray(ids) || !Array.isArray(genres) || ids.length !== genres.length) fail('Library changed while reading genres; take a new snapshot');
+        return ids.filter(function (_, i) { return typeof genres[i] === 'string' && genres[i].trim() && genreKey(genres[i]) === wanted; });
+    }
+    function auditSnapshot(s) {
+        if (!object(s) || s.version !== 1 || !Array.isArray(s.tracks) || own(s, 'kind')) fail('Expected a snapshot JSON or editable request, not an execution plan');
+        var draft = s.tracks.some(function (row) { return object(row) && own(row, 'expect'); });
+        if (draft && s.tracks.length) validateRequest(s);
+        var report = {version: 1, kind: 'music-tags-audit', basis: draft ? 'request' : 'snapshot', total: s.tracks.length, readable: 0, errors: [],
+            artwork: {embedded: 0, missingEmbedded: 0, unknownEmbedded: 0, inMusic: 0, missingInMusic: 0, unknownInMusic: 0},
+            lyrics: {present: 0, missing: 0, unknown: 0}, missing: {}, issues: []};
+        var checked = Object.keys(fields).filter(function (k) { return k !== 'lyrics'; }), seen = {};
+        checked.forEach(function (k) { report.missing[k] = 0; });
+        s.tracks.forEach(function (row) {
+            if (!object(row)) fail('Invalid snapshot row');
+            var pid = id(row.id); if (seen[pid]) fail('Duplicate snapshot ID: ' + pid); seen[pid] = true;
+            if (row.error) { report.errors.push({id: pid, error: String(row.error)}); return; }
+            if (!draft && (!object(row.snapshot) || !object(row.snapshot.metadata))) fail('Snapshot row has no metadata: ' + pid);
+            var before = draft ? row.info || {} : row.snapshot, m = draft ? {} : before.metadata, missing = [];
+            if (draft) {
+                m.name = row.expect.name; m.artist = row.expect.artist;
+                [row.fill || {}, s.defaults || {}, row.set || {}].forEach(function (values) {
+                    Object.keys(values).forEach(function (k) { if (values[k] !== null) m[k] = values[k]; });
+                });
+            }
+            report.readable++;
+            checked.forEach(function (k) {
+                var value = m[k], absent = typeof value !== fields[k];
+                if (!absent && fields[k] === 'string') absent = !value.trim();
+                if (!absent && fields[k] === 'number') absent = !isFinite(value) || value <= 0;
+                if (absent) { report.missing[k]++; missing.push(k); }
+            });
+            var embedded = typeof before.file_artwork_present === 'boolean' ? before.file_artwork_present : null;
+            var inMusic = Number.isInteger(before.artwork_count) && before.artwork_count >= 0 ? before.artwork_count > 0 : null;
+            report.artwork[embedded === null ? 'unknownEmbedded' : embedded ? 'embedded' : 'missingEmbedded']++;
+            report.artwork[inMusic === null ? 'unknownInMusic' : inMusic ? 'inMusic' : 'missingInMusic']++;
+            var lyrics = draft ? (typeof before.lyrics_present === 'boolean' ? before.lyrics_present : null) : typeof m.lyrics === 'string' && Boolean(m.lyrics.trim());
+            report.lyrics[lyrics === null ? 'unknown' : lyrics ? 'present' : 'missing']++;
+            if (missing.length || embedded !== true || inMusic !== true || !lyrics) report.issues.push({id: pid, name: m.name || '', artist: m.artist || '', missing: missing, artworkInFile: embedded, artworkInMusic: inMusic, lyrics: lyrics});
+        });
+        return report;
+    }
+    function editableSnapshot(s) {
+        if (!s.tracks.length) fail('No tracks to export');
+        var checked = auditSnapshot(s);
+        if (checked.errors.length) fail('Export blocked: ' + checked.errors.length + ' selected tracks could not be read; no partial request saved\n' + checked.errors.map(function (e) { return '[' + e.id + '] ' + e.error; }).join('\n'));
+        var request = {version: 1, description: 'Editable snapshot. Edit set values in this file; null means leave unchanged. info is read-only context at export. Attach covers/lyrics with relative paths. Existing lyrics are not copied into set.', tracks: []};
+        s.tracks.forEach(function (row) {
+            var source = row.snapshot, m = source.metadata, values = {};
+            Object.keys(fields).forEach(function (k) {
+                var v = m[k], known = typeof v === fields[k];
+                if (fields[k] === 'string') known = known && Boolean(v.trim());
+                if (fields[k] === 'number') known = known && isFinite(v) && v > 0;
+                values[k] = k === 'lyrics' || !known ? null : v;
+            });
+            request.tracks.push({id: row.id, expect: {name: m.name, artist: m.artist}, set: values, fill: {},
+                artwork_file: null, lyrics_file: null, lyrics_policy: null,
+                info: {duration: typeof source.duration === 'number' ? source.duration : null, favorite: typeof source.favorite === 'boolean' ? source.favorite : null,
+                    artwork_count: typeof source.artwork_count === 'number' ? source.artwork_count : null, file_artwork_present: typeof source.file_artwork_present === 'boolean' ? source.file_artwork_present : null,
+                    lyrics_present: typeof m.lyrics === 'string' && Boolean(m.lyrics.trim())}});
+        });
+        return validateRequest(request);
+    }
+    function snapshotInfo(rows, limit) {
+        if (limit === undefined) limit = 20;
+        if (limit !== null && (!Number.isInteger(limit) || limit < 0)) fail('Invalid display limit');
+        function safe(value, fallback) { return typeof value === 'string' && value.trim() ? value.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').replace(/\s+/g, ' ').trim() : fallback; }
+        function time(value) {
+            if (typeof value !== 'number' || !isFinite(value) || value < 0) return '?';
+            var n = Math.floor(value), seconds = String(n % 60).padStart(2, '0'), minutes = Math.floor(n / 60);
+            return minutes < 60 ? minutes + ':' + seconds : Math.floor(minutes / 60) + ':' + String(minutes % 60).padStart(2, '0') + ':' + seconds;
+        }
+        var total = 0, unknownTime = 0, favorites = 0, unknownFavorites = 0;
+        rows.forEach(function (row) {
+            if (typeof row.duration === 'number' && isFinite(row.duration) && row.duration >= 0) total += row.duration; else unknownTime++;
+            if (row.favorite === true) favorites++; else if (row.favorite !== false) unknownFavorites++;
+        });
+        var count = limit === null ? rows.length : Math.min(limit, rows.length);
+        var out = ['Music Tags — ' + rows.length + ' tracks',
+            'Duration: ' + time(total) + (unknownTime ? ' (unknown: ' + unknownTime + ')' : '') + ' | Favorites: ' + favorites + (unknownFavorites ? ' (unknown: ' + unknownFavorites + ')' : ''),
+            '\nShowing ' + count + '/' + rows.length + ':'];
+        rows.slice(0, count).forEach(function (row, index) {
+            var year = typeof row.year === 'number' && row.year > 0 ? String(row.year) : '?';
+            out.push('  ' + (index + 1) + '. ' + safe(row.artist, '<no artist>') + ' — ' + safe(row.name, '<untitled>') +
+                ' | ' + time(row.duration) + ' | ' + safe(row.album, '<no album>') + ' (' + year + ')' +
+                ' | fav:' + (row.favorite === true ? '+' : row.favorite === false ? '-' : '?'));
+        });
+        if (count < rows.length) out.push('  ... ' + (rows.length - count) + ' more; use --show all to display every track.');
+        return out.join('\n');
+    }
+    return {fields: fields, id: id, normalizeLyrics: normalizeLyrics, lyricsText: lyricsText, validateRequest: validateRequest, changes: changes, validatePlan: validatePlan, sameSnapshot: sameSnapshot, execute: execute, preview: preview, genreKey: genreKey, genreIDs: genreIDs, auditSnapshot: auditSnapshot, editableSnapshot: editableSnapshot, snapshotInfo: snapshotInfo};
 }());
 if (typeof module !== 'undefined') module.exports = MusicMVP;
