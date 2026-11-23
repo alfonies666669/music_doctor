@@ -48,3 +48,5 @@
 *.zip
 
 # Keep source JSON in examples/ and french/, and curated french/covers/ images.
+/runs/
+/local/
