@@ -1,0 +1,3 @@
+TagLib 2.3.2 (unmodified source)
+https://taglib.org/releases/taglib-2.3.2.tar.gz
+The upstream archive contains utf8cpp 4.2.0.

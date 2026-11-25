@@ -1,7 +1,7 @@
 /* macOS-only adapter. Run with the adjacent music-tags launcher. */
 ObjC.import('Foundation');
 ObjC.import('AppKit');
-var TOOL_VERSION = '0.8.0';
+var TOOL_VERSION = '0.9.8';
 var fm = $.NSFileManager.defaultManager;
 
 function textFile(path) {
@@ -126,7 +126,7 @@ function verifyFile(path, values, artAdded) {
     return {ok: ok, fields: results, reader: 'AVFoundation (direct file, not Spotlight)'};
 }
 function musicIO(core, root) {
-    var music = Application('com.apple.Music');
+    var music = Application('/System/Applications/Music.app');
     var library = music.libraryPlaylists[0];
     if (!library.exists()) throw new Error('Music library playlist is unavailable');
     function track(pid) {
@@ -163,6 +163,26 @@ function musicIO(core, root) {
             } catch (_) {}
         }
         return {values: null, property: null};
+    }
+    function filePaths() {
+        var rows = new Map();
+        try {
+            var tracks = library.fileTracks;
+            var ids = tracks.persistentID(), locations = tracks.location(), kinds = tracks.kind();
+            var after = tracks.persistentID();
+            if (![ids,locations,kinds,after].every(function (column) {
+                return Array.isArray(column) && column.length === ids.length;
+            })) return rows;
+            if (new Set(ids).size !== ids.length || ids.some(function (id,index) {return id !== after[index];}))
+                return rows;
+            ids.forEach(function (id,index) {
+                var path = locations[index] == null ? '' : String(locations[index]);
+                var kind = kinds[index];
+                if (path[0] === '/' && typeof kind === 'string' && kind.trim() && !/protected|Apple Music/i.test(kind))
+                    rows.set(id,path);
+            });
+        } catch (_) {return new Map();}
+        return rows;
     }
     return {
         libraryID: function () { return core.id(library.persistentID()); },
@@ -210,31 +230,94 @@ function musicIO(core, root) {
             var value = track(pid)[property]();
             return typeof value === 'boolean' ? value : null;
         },
+        filePaths: filePaths,
+        filePath: function (pid) {
+            var t = track(pid), path = t.location();
+            if (!path || /protected|Apple Music/i.test(t.kind())) throw new Error('No supported local file');
+            return String(path);
+        },
+        presenceForFile: function (pid, fields) {
+            var t = track(pid), out = {};
+            fields.forEach(function (key) {
+                try {
+                    var value = key === 'artwork' ? t.artworks.length : t[key]();
+                    if (typeof value === 'string') out[key] = Boolean(value.trim());
+                    else if (typeof value === 'number' && isFinite(value) && value >= 0) out[key] = value > 0;
+                    else if (key === 'compilation' && value === true) out[key] = true;
+                    else out[key] = null;
+                } catch (_) {out[key] = null;}
+            });
+            return out;
+        },
+        readForFile: function (pid, fields, includeLyrics) {
+            var t = track(pid), output = {tags:{},lyrics:null};
+            fields.forEach(function (key) {
+                try {
+                    var value = t[key]();
+                    // Music returns false/zero when source provenance is unavailable.
+                    if (value !== undefined && value !== null && value !== false && value !== 0 && value !== '') output.tags[key]=value;
+                } catch (_) {}
+            });
+            if (includeLyrics) {
+                try {
+                    var lyrics = t.lyrics();
+                    if (typeof lyrics === 'string') output.lyrics = lyrics;
+                } catch (_) {}
+            }
+            return output;
+        },
+        extractArtwork: function (pid, path) {
+            var t = track(pid);
+            var count = t.artworks.length;
+            if (!count) return false;
+            if (count !== 1) throw new Error('Multiple Music pictures; review manually');
+            task('/usr/bin/osascript',[root+'/extract-artwork.applescript',core.id(pid),path]);
+            return exists(path);
+        },
+        refreshFile: function (pid) {music.refresh(track(pid));},
+        matchesFile: function (row) {
+            return row.music_ids.every(function (pid) {
+                var t = track(pid);
+                if (row.artwork && !t.artworks.length) return false;
+                if (row.lyrics && core.normalizeLyrics(t.lyrics() || '') !== core.normalizeLyrics(textFile(row.lyrics.path))) return false;
+                return Object.keys(row.tags).every(function (key) {
+                    var expected = row.tags[key], current = t[key]();
+                    return Array.isArray(expected) ? expected.length === 1 && expected[0] === current : expected === current;
+                });
+            });
+        },
         version: function () { return music.version(); }
     };
 }
 function usage() {
     return 'Music Doctor '+TOOL_VERSION+' — macOS, local MP3/M4A, no external packages\n' +
         '  ./music-tags doctor\n' +
-        '  ./music-tags snapshot [--playlist "Playlist name" | --all] [filters] [request.json]\n' +
+        '  ./music-tags --version\n' +
+        '  ./music-tags snapshot --folder PATH [--recursive] [--music] [filters] [request.json]\n' +
+        '  ./music-tags snapshot [--music] [--playlist "Playlist name" | --all] [filters] [request.json]\n' +
         '  ./music-tags snapshot --genre "Custom Genre" [request.json]\n' +
         '  ./music-tags snapshot --artist \'Bushido OR Fler\'\n' +
         '  ./music-tags snapshot --artist \'Bushido OR Fler\' request.json\n' +
         '  ./music-tags snapshot --help\n' +
         '  ./music-tags audit request-or-snapshot.json [report.json]\n' +
         '  ./music-tags validate request.json\n' +
-        '  ./music-tags prepare request.json runs/plan.json\n' +
+        '  ./music-tags prepare request.json runs/plan.json [--force true|false]\n' +
         '  ./music-tags preview runs/plan.json\n' +
         '  ./music-tags apply runs/plan.json\n' +
         '  ./music-tags status runs/plan.json\n' +
-        '  ./music-tags inspect runs/plan.json\n' +
-        'Only apply writes music. No snapshot output path = console preview; with a path = editable request.\nText/cover data must be supplied in the request.';
+        '  ./music-tags inspect request-or-plan.json\n' +
+        'Only apply writes music. No snapshot output path = console preview; with a path = editable request.\nThe request can link to local artwork and lyrics assets.';
 }
 function snapshotUsage() {
     return 'Snapshot selection (read-only):\n' +
         '  ./music-tags snapshot ["Playlist" | --playlist "Playlist" | --all] [filters] [output.json]\n' +
-        '  No output path: fast console preview; no audio-file reads or hashes.\n' +
-        '  With output path: editable request JSON, ready for validate/prepare.\n' +
+        '  No output path: fast console preview; file tags are read without full hashes.\n' +
+        '  With output path: editable request JSON, short summary, and live <output>.log.\n' +
+        '  See examples/README.md for editing the generated request.\n' +
+        '  --folder PATH [--recursive]   Scan local audio files without Music\n' +
+        '  --music                 Use the catalog or enrich an explicit folder\n' +
+        '  --has EXPR              artwork=false: missing from the file and Music\n' +
+        '                          artwork=music-only: in Music, missing from the file\n' +
         '  --name / --title EXPR    Title contains text / logical expression\n' +
         '  --artist EXPR            Artist contains text, including collaborations\n' +
         '  --album EXPR             Album contains text / logical expression\n' +
@@ -243,8 +326,8 @@ function snapshotUsage() {
         '  --favorite true|false    Favorite status in Music\n' +
         '  --min-duration VALUE     Duration >= seconds, M:SS or H:MM:SS\n' +
         '  --max-duration VALUE     Duration <= value (all bounds nonnegative)\n' +
-        '  --sort FIELD [--desc]    name, artist, album, albumArtist, genre, favorite, duration\n' +
-        '  --show N|all             Console rows only (default 20; 0 hides rows)\n' +
+        '  --sort FIELD [--desc]    name, artist, album, albumArtist, genre, favorite, duration, has.FIELD, has.file.FIELD, has.music.FIELD\n' +
+        '  --show N|all             Show track rows (default 20 for preview, none for export)\n' +
         'Different flags combine with AND. Without a playlist, search the whole library.\n' +
         'Inside text arguments: uppercase AND / OR / NOT, && / || / !, parentheses.\n' +
         'Precedence: NOT > AND > OR. "Bushido NOT Fler" means "Bushido AND NOT Fler".\n' +
@@ -384,67 +467,39 @@ function prepareRequest(request, requestPath, output, io, core) {
     }
 }
 function run(argv) {
-    var root=argv.shift(),core=eval(textFile(root+'/core.js')+'\nMusicMVP;'),command=argv.shift();
-    if(!command||command==='help'||command==='--help')return usage();
-    if(command==='--version'||command==='version')return TOOL_VERSION;
-    if(command==='snapshot'&&argv.length===1&&(argv[0]==='--help'||argv[0]==='-h'))return snapshotUsage();
-    var filters = command==='snapshot' ? eval(textFile(root+'/filters.js')+'\nMusicFilters;') : null;
-    var required={doctor:0,snapshot:2,validate:1,prepare:2,preview:1,apply:1,status:1,inspect:1};
-    var selection = command === 'snapshot' ? filters.parse(argv) : null;
-    if(command === 'audit') {
-        if(argv.length !== 1 && argv.length !== 2) throw new Error(usage());
-        var report = core.auditSnapshot(JSON.parse(textFile(absolute(argv[0]))));
-        if(argv.length === 2) {
-            var reportPath = absolute(argv[1]);
-            mkdir(ObjC.unwrap($(reportPath).stringByDeletingLastPathComponent));
-            saveJSON(reportPath, report, false);
+    var root=argv.shift(), core=eval(textFile(root+'/core.js')+'\nMusicMVP;'), command=argv.shift();
+    if(!command || command==='help' || command==='--help') return usage();
+    if(command==='--version' || command==='version') return TOOL_VERSION;
+    if(command==='snapshot' && argv.length===1 && (argv[0]==='--help' || argv[0]==='-h')) return snapshotUsage();
+
+    var counts={doctor:[0],snapshot:null,validate:[1],prepare:null,preview:[1],apply:[1],status:[1],inspect:[1],audit:[1,2]};
+    if(!Object.prototype.hasOwnProperty.call(counts,command) || (counts[command] && counts[command].indexOf(argv.length)<0)) throw new Error(usage());
+    if(['validate','audit','preview','status','apply','inspect'].indexOf(command)>=0) {
+        var input=absolute(argv[0]), value=JSON.parse(textFile(input));
+        if (value.version===1) {
+            if (command==='audit') {
+                var report=core.auditSnapshot(value);
+                if (argv[1]) {
+                    var output=absolute(argv[1]);
+                    mkdir(ObjC.unwrap($(output).stringByDeletingLastPathComponent)); saveJSON(output,report,false);
+                }
+                return auditPreview(report);
+            }
+            if (command==='validate') {
+                core.validateRequest(value); validateAssets(value,input,core);
+                return 'Valid legacy request version 1. Export a version 2 snapshot before writing.';
+            }
+            if (command==='preview') return core.preview(value);
+            if (command==='status') {
+                core.validatePlan(value);
+                var legacyJournal=input+'.journal.json';
+                return exists(legacyJournal) ? textFile(legacyJournal) : JSON.stringify({status:'not_applied',total:value.tracks.length},null,2);
+            }
+            throw new Error('Version 1 is read-only in this release. Export a version 2 request and prepare a new plan.');
         }
-        return auditPreview(report) + (argv.length === 2 ? '\nSaved: ' + reportPath : '') + '\nNo Music access or changes.';
     }
-    if(!Object.prototype.hasOwnProperty.call(required,command)||(command!=='snapshot'&&argv.length!==required[command]))throw new Error(usage());
-    if(command==='validate'||command==='prepare') {
-        var requestPath=absolute(argv[0]),request=core.validateRequest(JSON.parse(textFile(requestPath)));
-        validateAssets(request,requestPath,core);
-        if(command==='validate')return 'Valid request: '+request.tracks.length+' tracks. No Music access or changes.';
-        return prepareRequest(request,requestPath,absolute(argv[1]),musicIO(core,root),core);
-    }
-    if(command==='preview')return core.preview(JSON.parse(textFile(absolute(argv[0]))));
-    if(command==='status') {
-        var planPath=absolute(argv[0]),plan=core.validatePlan(JSON.parse(textFile(planPath))),journalPath=planPath+'.journal.json';
-        if(!exists(journalPath))return JSON.stringify({status:'not_applied',total:plan.tracks.length},null,2);
-        var log=JSON.parse(textFile(journalPath));
-        return JSON.stringify({status:log.status,verified:log.tracks.filter(function(t){return t.status==='verified';}).length,total:plan.tracks.length,plan_matches:log.plan_sha256===sha(planPath),error:log.error||null},null,2);
-    }
-    var io;
-    if(command==='doctor'||command==='snapshot')io=musicIO(core,root);
-    if(command==='doctor')return JSON.stringify({tool_version:TOOL_VERSION,music_version:io.version(),library_playlist_id:io.libraryID(),note:'Connection only; not a unique library fingerprint.'},null,2);
-    if(command==='snapshot') {
-        return snapshotCommand(selection,io,core,filters);
-    }
-    var path=absolute(argv[0]),p=core.validatePlan(JSON.parse(textFile(path)));
-    if(command==='inspect'){
-        io=musicIO(core,root);
-        return JSON.stringify(p.tracks.map(function(t){var s=io.snapshot(t.id);return{id:t.id,music:s,file_metadata:fileMetadata(s.path)};}),null,2);
-    }
-    var journal=path+'.journal.json',backups=path+'.backups',planHash=sha(path);
-    if(exists(journal)) {
-        var old=JSON.parse(textFile(journal));
-        if(old.status==='complete'&&old.plan_sha256===planHash)return 'Already complete; no changes applied. Journal: '+journal;
-        throw new Error('Journal exists. Inspect status and prepare a NEW plan after a partial failure.');
-    }
-    if(exists(backups))throw new Error('Backup directory already exists');
-    io=musicIO(core,root);
-    var lock=ObjC.unwrap($.NSTemporaryDirectory())+'music-tags-'+ObjC.unwrap($.NSUserName())+'.lock';
-    task('/bin/mkdir',[lock]);
-    try {
-        io.record=function(log){log.plan_sha256=planHash;saveJSON(journal,log,true);};
-        io.backup=function(file,index,hash){
-            mkdir(backups);var target=backups+'/'+index+'-'+ObjC.unwrap($(file).lastPathComponent);
-            task('/bin/cp',['-p',file,target]);
-            if(sha(target)!==hash||sha(file)!==hash)throw new Error('File changed while backing up');
-            return target;
-        };
-        var log=core.execute(p,io);
-        return 'Verified: '+log.tracks.length+' tracks. Journal: '+journal;
-    } finally {task('/bin/rmdir',[lock]);}
+    var filters = command==='snapshot' ? eval(textFile(root+'/filters.js')+'\nMusicFilters;') : null;
+    var FileCore=eval(textFile(root+'/file-core.js')+'\nFileCore;');
+    var files=eval(textFile(root+'/file-commands.js')+'\nFileCommands;');
+    return files.run(root,command,argv,core,filters);
 }

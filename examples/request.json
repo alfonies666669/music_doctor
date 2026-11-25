@@ -1,25 +1,11 @@
 {
-  "version": 1,
-  "description": "Example only: replace the ID and expected name/artist with your snapshot values.",
-  "defaults": {
-    "genre": "Custom Genre"
-  },
+  "version": 2,
+  "defaults": {"genre": "French Hip-Hop"},
   "tracks": [
     {
-      "id": "0000000000000001",
-      "expect": {
-        "name": "Example Song",
-        "artist": "Example Artist"
-      },
-      "set": {
-        "album": "Example Album",
-        "year": 2024,
-        "trackNumber": 1,
-        "trackCount": 10
-      },
-      "fill": {
-        "lyrics": "Example line one\nExample line two"
-      }
+      "path": "/absolute/music/example.mp3",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tags": {"name": "Example Song", "composer": "Example Composer"}
     }
   ]
 }

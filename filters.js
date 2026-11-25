@@ -3,6 +3,13 @@ var MusicFilters = (function () {
     'use strict';
     var textFields = ['name', 'artist', 'album', 'albumArtist', 'genre'];
     var sortFields = textFields.concat(['favorite', 'duration']);
+    var presenceFields = textFields.concat(['composer', 'year', 'trackNumber', 'trackCount',
+        'discNumber', 'discCount', 'compilation', 'artwork', 'lyrics']);
+    function presenceField(field) {
+        var match = /^has\.(?:(file|music)\.)?([A-Za-z]+)$/.exec(field || '');
+        return match && presenceFields.indexOf(match[2]) >= 0 ?
+            {source:match[1] || 'combined', tag:match[2]} : null;
+    }
     var textOps = ['eq', 'contains', 'startsWith', 'endsWith'];
     var numberOps = ['eq', 'gt', 'gte', 'lt', 'lte'];
     function fail(message) { throw new Error(message); }
@@ -33,8 +40,8 @@ var MusicFilters = (function () {
                 if (!Array.isArray(value) || !value.length) fail(field + ' must contain a nonempty array');
                 value.forEach(function (child) { visit(child, depth + 1); });
             } else if (field === 'not') visit(value, depth + 1);
-            else if (field === 'favorite') {
-                if (typeof value !== 'boolean') fail('favorite must be true or false');
+            else if (field === 'favorite' || presenceField(field)) {
+                if (typeof value !== 'boolean') fail(field + ' must be true or false');
             } else if (textFields.indexOf(field) >= 0 || field === 'duration') {
                 if (!object(value) || !Object.keys(value).length) fail(field + ' needs a comparison object');
                 Object.keys(value).forEach(function (op) {
@@ -76,7 +83,13 @@ var MusicFilters = (function () {
             }
             return unknown ? null : field === 'all';
         }
-        if (field === 'favorite') return typeof value === 'boolean' ? value === expected : null;
+        if (field === 'favorite' || presenceField(field)) return typeof value === 'boolean' ? value === expected : null;
+        if (Array.isArray(value) && textFields.indexOf(field) >= 0) {
+            return value.length ? value.some(function (item) {
+                var one = {}; one[field] = item;
+                return evaluate(expression, one) === true;
+            }) : false;
+        }
         if (field === 'duration' && (typeof value !== 'number' || !isFinite(value) || value < 0)) return null;
         if (field !== 'duration' && typeof value !== 'string') return null;
         return Object.keys(expected).every(function (op) {
@@ -97,12 +110,13 @@ var MusicFilters = (function () {
     }
     function sort(rows, field, descending) {
         if (!field) return rows.slice();
-        if (sortFields.indexOf(field) < 0) fail('Unsupported sort field: ' + field);
+        if (sortFields.indexOf(field) < 0 && !presenceField(field)) fail('Unsupported sort field: ' + field);
         return rows.map(function (row, index) { return {row: row, index: index}; }).sort(function (a, b) {
             function value(row) {
                 var v = row[field];
+                if (Array.isArray(v)) v = v.find(function (item) { return typeof item === 'string' && item.trim(); });
                 if (textFields.indexOf(field) >= 0) return typeof v === 'string' && v.trim() ? key(v) : null;
-                if (field === 'favorite') return typeof v === 'boolean' ? Number(v) : null;
+                if (field === 'favorite' || presenceField(field)) return typeof v === 'boolean' ? Number(v) : null;
                 return typeof v === 'number' && isFinite(v) && v >= 0 ? v : null;
             }
             var av = value(a.row), bv = value(b.row);
@@ -114,7 +128,7 @@ var MusicFilters = (function () {
     function combine(expressions) { return expressions.length === 0 ? null : expressions.length === 1 ? expressions[0] : {all: expressions}; }
     function inline(field, value) {
         text(value, false);
-        if (textFields.indexOf(field) < 0) fail('Inline expressions need a text field');
+        if (textFields.indexOf(field) < 0 && field !== 'has') fail('Inline expressions need a text field');
         var tokens = [], buffer = '', hasOperators = false;
         function flush() {
             if (buffer.trim()) tokens.push({type: 'term', value: buffer.trim(), quoted: false});
@@ -150,8 +164,26 @@ var MusicFilters = (function () {
             }
         }
         flush();
-        function leaf(term) { var node = {}; node[field] = {}; node[field][field === 'genre' ? 'eq' : 'contains'] = term; return node; }
-        if (!hasOperators) {
+        function leaf(term) {
+            var node = {};
+            if (field === 'has') {
+                var match = /^((?:(?:file|music)\.)?[A-Za-z]+)\s*=\s*(true|false|music-only)$/.exec(term);
+                var parsed = match && presenceField('has.' + match[1]);
+                if (!parsed) fail('Expected --has FIELD=true, FIELD=false, or FIELD=music-only');
+                if (match[2] === 'music-only') {
+                    if (parsed.source !== 'combined') fail('Use FIELD=music-only without a source prefix');
+                    var file = {}, music = {};
+                    file['has.file.' + parsed.tag] = false;
+                    music['has.music.' + parsed.tag] = true;
+                    return {all:[file,music]};
+                }
+                node['has.' + match[1]] = match[2] === 'true';
+            } else {
+                node[field] = {}; node[field][field === 'genre' ? 'eq' : 'contains'] = term;
+            }
+            return node;
+        }
+        if (!hasOperators && field !== 'has') {
             // Preserve existing literal names, including ordinary parentheses and apostrophes.
             return leaf(tokens.length === 1 && tokens[0].quoted ? tokens[0].value : value);
         }
@@ -187,13 +219,15 @@ var MusicFilters = (function () {
         return validate(expression);
     }
     function parse(argv) {
-        var positional = [], expressions = [], used = {}, scope = null, sortBy = null, descending = false, show = 20;
-        var options = ['--genre', '--name', '--title', '--artist', '--album', '--album-artist', '--favorite', '--min-duration', '--max-duration', '--playlist', '--sort', '--show'];
+        var positional = [], expressions = [], used = {}, scope = null, sortBy = null, descending = false, show = 20, folder = null, music = false, recursive = false, presence = null;
+        var options = ['--genre', '--name', '--title', '--artist', '--album', '--album-artist', '--favorite', '--min-duration', '--max-duration', '--playlist', '--sort', '--show', '--folder', '--has'];
         var min = null, max = null;
         function once(flag) { if (used[flag]) fail('Repeated option: ' + flag + '; combine names with AND/OR/NOT inside one quoted argument'); used[flag] = true; }
         for (var i = 0; i < argv.length; i++) {
             var flag = argv[i];
             if (flag === '--all') { once('scope'); scope = {kind: 'all', value: '--all'}; continue; }
+            if (flag === '--music') { once(flag); music = true; continue; }
+            if (flag === '--recursive') { once(flag); recursive = true; continue; }
             if (flag === '--desc') { once(flag); descending = true; continue; }
             if (flag.slice(0, 2) !== '--') { positional.push(flag); continue; }
             if (options.indexOf(flag) < 0) fail('Unknown snapshot option: ' + flag);
@@ -201,12 +235,14 @@ var MusicFilters = (function () {
             if (++i >= argv.length || argv[i].slice(0, 2) === '--') fail('Missing value for ' + flag);
             var value = argv[i];
             if (flag === '--playlist') { text(value, false); scope = {kind: 'playlist', value: value}; }
+            else if (flag === '--folder') { text(value, false); folder = value; }
+            else if (flag === '--has') presence = inline('has', value);
             else if (flag === '--show') {
                 if (value === 'all') show = null;
                 else if (/^\d+$/.test(value) && Number.isSafeInteger(Number(value))) show = Number(value);
                 else fail('--show must be a nonnegative integer or all');
             }
-            else if (flag === '--sort') { if (sortFields.indexOf(value) < 0) fail('--sort accepts ' + sortFields.join(', ')); sortBy = value; }
+            else if (flag === '--sort') { if (sortFields.indexOf(value) < 0 && !presenceField(value)) fail('--sort accepts ' + sortFields.join(', ') + ' or has.FIELD'); sortBy = value; }
             else if (flag === '--favorite') {
                 if (value !== 'true' && value !== 'false') fail('--favorite must be true or false');
                 expressions.push({favorite: value === 'true'});
@@ -225,16 +261,24 @@ var MusicFilters = (function () {
         if (descending && !sortBy) fail('--desc requires --sort');
         if (positional.length === 2) { if (scope) fail('Use one playlist/all scope'); scope = {kind: 'playlist', value: positional.shift()}; text(scope.value, false); }
         if (positional.length > 1 || positional.some(function (v) { return !v; })) fail('Use snapshot [playlist or filters] [output.json]');
-        if (positional.length === 1 && !scope && !expressions.length && !/\.json$/i.test(positional[0])) {
+        if (positional.length === 1 && !scope && !folder && !music && !expressions.length && !presence && !/\.json$/i.test(positional[0])) {
             scope = {kind: 'playlist', value: positional.shift()}; text(scope.value, false);
         }
         var expression = combine(expressions); if (expression) validate(expression);
+        if (folder && scope) fail('Use one primary source: --folder or a Music scope');
+        if (recursive && !folder) fail('--recursive requires --folder');
+        if (folder && !music && (fields(expression).indexOf('favorite') >= 0 || sortBy === 'favorite')) fail('Favorite requires Music');
+        if (folder && !music && fields(presence).concat(sortBy || []).some(function (field) {
+            var parsed = presenceField(field);
+            return parsed && parsed.source === 'music';
+        })) fail('music.FIELD requires --music when scanning a folder');
         scope = scope || {kind: 'all', value: '--all'};
         var onlyGenre = expressions.length === 1 && Object.keys(expressions[0])[0] === 'genre' && scope.kind === 'all';
         return {kind: onlyGenre ? 'genre' : expression ? 'filter' : scope.kind,
             value: onlyGenre ? expressions[0].genre.eq : scope.value, scope: scope, filter: expression,
-            sort_by: sortBy, descending: descending, show_limit: show, output: positional.length ? positional[0] : null};
+            folder: folder, music: music, recursive: recursive, presence: presence, sort_by: sortBy, descending: descending,
+            show_limit: show, show_explicit: Boolean(used['--show']), output: positional.length ? positional[0] : null};
     }
-    return {validate: validate, fields: fields, evaluate: evaluate, sort: sort, inline: inline, parse: parse, duration: duration};
+    return {validate: validate, fields: fields, evaluate: evaluate, sort: sort, inline: inline, parse: parse, duration: duration, presenceField: presenceField};
 }());
 if (typeof module !== 'undefined') module.exports = MusicFilters;

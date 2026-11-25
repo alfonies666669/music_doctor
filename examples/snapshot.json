@@ -1,39 +1,30 @@
 {
-  "version": 1,
-  "description": "Fictional editable snapshot. Replace ID and expect with your library values. null leaves a field unchanged. info is context at export.",
+  "version": 2,
   "tracks": [
     {
-      "id": "0000000000000001",
-      "expect": {
-        "name": "Example Song",
-        "artist": "Example Artist"
-      },
-      "set": {
+      "tags": {
         "name": "Example Song",
         "artist": "Example Artist",
-        "album": "Example Album",
-        "albumArtist": "Example Artist",
+        "album": null,
+        "albumArtist": null,
         "composer": null,
-        "genre": "Custom Hip-Hop",
-        "year": 2024,
-        "trackNumber": 1,
-        "trackCount": 10,
-        "discNumber": 1,
-        "discCount": 1,
-        "compilation": false,
-        "lyrics": null
+        "genre": null,
+        "year": null,
+        "trackNumber": null,
+        "trackCount": null,
+        "discNumber": null,
+        "discCount": null,
+        "compilation": null
       },
-      "fill": {},
-      "artwork_file": null,
-      "lyrics_file": null,
-      "lyrics_policy": null,
-      "info": {
-        "duration": 120,
-        "favorite": false,
-        "artwork_count": 1,
-        "file_artwork_present": false,
-        "lyrics_present": false
-      }
+      "artwork": false,
+      "lyrics": false,
+      "music_suggestions": {
+        "albumArtist": "Example Artist",
+        "discNumber": 1
+      },
+      "path": "/absolute/music/example.m4a",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "music_ids": ["0000000000000001"]
     }
   ]
 }

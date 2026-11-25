@@ -1,8 +1,11 @@
 #!/bin/sh
 set -eu
 if [ "$(uname -s)" != Darwin ]; then
-  echo 'Music Doctor requires macOS and Music.app.' >&2
+  echo 'Music Doctor requires macOS.' >&2
   exit 1
 fi
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+MUSIC_TAGS_TTY=0
+if [ -t 2 ]; then MUSIC_TAGS_TTY=1; fi
+export MUSIC_TAGS_TTY
 exec /usr/bin/osascript -l JavaScript "$ROOT/jxa.js" "$ROOT" "$@"
