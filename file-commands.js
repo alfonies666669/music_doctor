@@ -526,6 +526,7 @@ var FileCommands = (function () {
                     if (options.force || !actual.lyrics || actual.lyrics.sha256!==info.sha256) row.lyrics=info;
                     else remove(file);
                 }
+                preflight(root,row,true);
                 plan.tracks.push(row);
             });
             FileCore.plan(plan);
@@ -541,8 +542,15 @@ var FileCommands = (function () {
         return request;
     }
     function changing(row) {return Object.keys(row.tags).length>0 || Boolean(row.artwork || row.lyrics);}
-    function preflight(root,row) {
-        native(root,{op:'preflight',path:row.path,sha256:row.sha256,identity:row.identity,write:changing(row)});
+    function preflight(root,row,planning) {
+        var result;
+        try {
+            result=native(root,{op:'preflight',path:row.path,sha256:row.sha256,identity:row.identity,write:changing(row)});
+        } catch(e) {throw new Error(row.path+': '+label(e));}
+        if (planning && result.id3_migration) row.id3_migration=result.id3_migration;
+        var expected=row.id3_migration, actual=result.id3_migration;
+        check((!expected && !actual) || (expected && actual && expected.from===actual.from && expected.to===actual.to),
+            row.path+': ID3 migration differs from plan; prepare a new plan');
         ['artwork','lyrics'].forEach(function(key) {
             if(row[key]) check(sha(row[key].path)===row[key].sha256,'Changed '+key+' asset for '+row.path);
         });

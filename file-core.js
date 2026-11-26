@@ -120,9 +120,14 @@ var FileCore = (function () {
             typeof value.created_at === 'string','Expected prepared file plan version 2');
         var identities = new Set();
         records(value.tracks,'plan',function (row) {
-            keys(row,['path','sha256','identity','before','tags','artwork','lyrics','music_ids'],'plan track');
+            keys(row,['path','sha256','identity','before','tags','artwork','lyrics','music_ids','id3_migration'],'plan track');
             check(typeof row.identity === 'string' && /^\d+:\d+$/.test(row.identity) && !identities.has(row.identity),'Repeated or invalid physical file');
             identities.add(row.identity);
+            if (own(row,'id3_migration')) {
+                keys(row.id3_migration,['from','to'],'ID3 migration');
+                check(row.id3_migration.from === 2 && row.id3_migration.to === 3 && /\.mp3$/i.test(row.path) &&
+                    (Object.keys(row.tags).length > 0 || row.artwork || row.lyrics),'Invalid ID3 migration');
+            }
             check(object(row.before),'Missing source tags');
             tags(row.tags,'plan tags',false);
             ['artwork','lyrics'].forEach(function (key) { if (own(row,key)) asset(row[key],key); });
@@ -134,6 +139,7 @@ var FileCore = (function () {
         var out = ['Music Doctor — ' + value.tracks.length + ' files | force=' + value.force];
         value.tracks.forEach(function (row) {
             out.push('\n' + row.path);
+            if (row.id3_migration) out.push('  ID3v2.2 → ID3v2.3');
             var keys = Object.keys(row.tags);
             keys.forEach(function (key) {
                 var before = row.before[key], after = row.tags[key];
@@ -169,6 +175,7 @@ var FileCore = (function () {
     }
     function targetSummary(row) {
         var summary = {};
+        if (row.id3_migration) summary.id3_version = {before:2,after:3};
         Object.keys(row.tags).forEach(function (key) {
             summary[key] = {before: row.before[key] == null ? null : row.before[key], after: row.tags[key]};
         });
