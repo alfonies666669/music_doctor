@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "macOS deployment target")
-project(music_tags_file VERSION 0.9.1 LANGUAGES CXX OBJCXX)
+project(music_tags_file VERSION 0.9.3 LANGUAGES CXX OBJCXX)
 if(NOT APPLE)
   message(FATAL_ERROR "Music Doctor requires macOS")
 endif()

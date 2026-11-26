@@ -1,11 +1,21 @@
 {
   "version": 2,
-  "defaults": {"genre": "French Hip-Hop"},
   "tracks": [
     {
-      "path": "/absolute/music/example.mp3",
-      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "tags": {"name": "Example Song", "composer": "Example Composer"}
+      "path": "/absolute/music/example.m4a",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "tags": {
+        "name": "Example Song",
+        "artist": "Example Artist",
+        "album": "Example Album",
+        "albumArtist": "Example Artist",
+        "composer": "Example Composer",
+        "genre": "Example Genre",
+        "year": 2024
+      },
+      "artwork": "covers/song.jpg",
+      "lyrics": "lyrics/song.txt",
+      "music_ids": ["0000000000000001"]
     }
   ]
 }

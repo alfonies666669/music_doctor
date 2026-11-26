@@ -727,6 +727,45 @@ static NSData *accessControl(NSString *path) {
     acl_free(text);
     return result;
 }
+// cp -p may rewrite quarantine metadata on macOS. Restore metadata only on
+// checked, distinct working/backup files; never remove the comparison at commit.
+static void restoreMetadata(NSString *source, NSString *target, NSString *sourceHash,
+                            NSString *identity, NSString *targetHash) {
+    checkExpected(source,sourceHash,identity);
+    auto original = statFile(source), replacement = statFile(target);
+    require(original.st_dev != replacement.st_dev || original.st_ino != replacement.st_ino,
+            "Metadata restoration requires a distinct copy");
+    require([fileHash(target) isEqual:targetHash], "Copy bytes changed before metadata restoration");
+    require(original.st_mode == replacement.st_mode && original.st_uid == replacement.st_uid &&
+            original.st_gid == replacement.st_gid && original.st_flags == replacement.st_flags,
+            "Copy has different ownership or mode");
+    NSDictionary *expected = extendedAttributes(source), *actual = extendedAttributes(target);
+    NSData *expectedACL = accessControl(source);
+    for (NSString *key in actual) {
+        if (!expected[key])
+            require(removexattr(target.fileSystemRepresentation,key.UTF8String,XATTR_NOFOLLOW) == 0,
+                    "Cannot remove an unexpected attribute from the copy");
+    }
+    for (NSString *key in expected) {
+        NSData *value = expected[key];
+        if (![value isEqual:actual[key]]) {
+            if (setxattr(target.fileSystemRepresentation,key.UTF8String,value.bytes,value.length,0,XATTR_NOFOLLOW) != 0)
+                throw std::runtime_error(std::string("Cannot preserve extended attribute on copy: ") + key.UTF8String);
+        }
+    }
+    if (![expectedACL isEqual:accessControl(target)]) {
+        auto acl = acl_get_file(source.fileSystemRepresentation,ACL_TYPE_EXTENDED);
+        require(acl != nullptr, "Cannot read source ACL for copy");
+        int status = acl_set_file(target.fileSystemRepresentation,ACL_TYPE_EXTENDED,acl);
+        acl_free(acl);
+        require(status == 0, "Cannot preserve ACL on copy");
+    }
+    require([expected isEqual:extendedAttributes(target)] && [expectedACL isEqual:accessControl(target)],
+            "Copy metadata differs after restoration");
+    require([fileHash(target) isEqual:targetHash], "Copy bytes changed during metadata restoration");
+    require(sameStat(original,statFile(source)), "Source changed during metadata restoration");
+}
+
 static void syncPath(NSString *path, bool directory) {
     int fd = open(path.fileSystemRepresentation, O_RDONLY | O_NOFOLLOW | (directory ? O_DIRECTORY : 0));
     require(fd >= 0, "Cannot open path for synchronization");
@@ -737,7 +776,7 @@ static void syncPath(NSString *path, bool directory) {
 static NSDictionary *dispatch(NSDictionary *request) {
     NSString *op = request[@"op"];
     require([request[@"protocol"] isEqual:@1], "Unsupported helper protocol");
-    if ([op isEqual:@"version"]) return @{@"module":@"0.9.1",@"taglib":[NSString stringWithFormat:@"%d.%d.%d",TAGLIB_MAJOR_VERSION,TAGLIB_MINOR_VERSION,TAGLIB_PATCH_VERSION]};
+    if ([op isEqual:@"version"]) return @{@"module":@"0.9.3",@"taglib":[NSString stringWithFormat:@"%d.%d.%d",TAGLIB_MAJOR_VERSION,TAGLIB_MINOR_VERSION,TAGLIB_PATCH_VERSION]};
     if ([op isEqual:@"read"] || [op isEqual:@"capture"]) {
         NSMutableArray *rows = [NSMutableArray array];
         for (NSString *path in request[@"paths"]) {
@@ -786,21 +825,29 @@ static NSDictionary *dispatch(NSDictionary *request) {
         temporary.write(goals,art ? imageAt(art) : nil,lyrics);
         return @{@"saved":@YES};
     }
+    if ([op isEqual:@"restore_metadata"]) {
+        restoreMetadata(request[@"source"],path,request[@"sha256"],request[@"identity"],request[@"target_sha256"]);
+        return @{};
+    }
     if ([op isEqual:@"commit"]) {
         NSString *temp = request[@"temp"];
         auto original = statFile(path), replacement = statFile(temp);
         require(original.st_dev == replacement.st_dev, "Temporary file must be on the same volume");
         require(original.st_mode == replacement.st_mode && original.st_uid == replacement.st_uid &&
                 original.st_flags == replacement.st_flags && original.st_gid == replacement.st_gid, "Temporary file has different ownership or mode");
-        require([extendedAttributes(path) isEqual:extendedAttributes(temp)] &&
-                [accessControl(path) isEqual:accessControl(temp)], "Temporary copy changed file attributes or ACL");
+        require([extendedAttributes(path) isEqual:extendedAttributes(temp)], "Temporary copy changed extended attributes");
+        require([accessControl(path) isEqual:accessControl(temp)], "Temporary copy changed ACL");
         require([fileHash(temp) isEqual:request[@"target_sha256"]] && sameStat(replacement,statFile(temp)), "Verified temporary file changed");
         syncPath(temp,false);
         checkExpected(path,request[@"sha256"],request[@"identity"]);
         require(sameStat(original,statFile(path)) && sameStat(replacement,statFile(temp)), "File changed before replacement");
         require(rename(temp.fileSystemRepresentation,path.fileSystemRepresentation) == 0, "Could not replace original file");
         syncPath(path.stringByDeletingLastPathComponent,true);
-        return @{};
+        // Music can move the file immediately after rename; retain its inode
+        // without reopening an already stale pathname.
+        return @{@"sha256":request[@"target_sha256"],
+                 @"identity":[NSString stringWithFormat:@"%llu:%llu",
+                     (unsigned long long)replacement.st_dev,(unsigned long long)replacement.st_ino]};
     }
     throw std::runtime_error("Unsupported helper operation");
 }

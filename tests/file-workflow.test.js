@@ -7,7 +7,7 @@ const path = require('node:path');
 const {spawnSync} = require('node:child_process');
 const {createHash} = require('node:crypto');
 const filters = require('../filters');
-const core = require('../file-core');
+const core = require('../core');
 
 test('presence expressions treat read errors as unknown and sort unknown last', () => {
     const query = filters.parse(['--folder', '/music', '--has', '(artwork=false OR composer=false) AND NOT name=false',
@@ -163,7 +163,7 @@ test('Presence uses file and Music and Music-only lyrics are written with force=
     fs.mkdirSync(runtime);
     fs.mkdirSync(media);
     fs.mkdirSync(path.join(runtime,'bin'));
-    for(const f of ['music-tags','core.js','filters.js','file-core.js','file-commands.js'])
+    for(const f of ['music-tags','core.js','filters.js','file-commands.js'])
         fs.copyFileSync(path.join(root,f),path.join(runtime,f));
     fs.copyFileSync(native,path.join(runtime,'bin','music-tags-file'));
     const run=(...args) => execute(path.join(runtime,'music-tags'),args);

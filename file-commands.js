@@ -1,5 +1,5 @@
 /* JXA coordinator for file requests/plans. Shared Foundation helpers live in jxa.js. */
-var FileCommands = (function () {
+var FileCommands = (function (core) {
     'use strict';
     function check(ok, message) { if (!ok) throw new Error(message); }
     function label(e) { return String(e.message || e); }
@@ -160,7 +160,7 @@ var FileCommands = (function () {
         return {paths:paths,ordered:ordered};
     }
     function musicCandidate(io, ids, actual, presence, errors) {
-        var fields = FileCore.fields.filter(function (key) {return actual.has[key] === false;});
+        var fields = core.fields.filter(function (key) {return actual.has[key] === false;});
         if (ids.length !== 1) {
             if (ids.length > 1) errors.push(actual.path + ': multiple Music records, enrichment skipped');
             return {tags:{},lyrics:null};
@@ -227,10 +227,10 @@ var FileCommands = (function () {
                 var ids = entry.music ? entry.music.ids : [];
                 var suggestions = {}, assetsFromMusic = [];
                 var fallback = io && ids.length ? musicCandidate(io,ids,actual,entry.musicPresence,errors) : {tags:{},lyrics:null};
-                FileCore.fields.forEach(function (key) {
-                    var value = actual.has[key] === true && FileCore.validValue(key,actual.tags[key]) ? actual.tags[key] : null;
+                core.fields.forEach(function (key) {
+                    var value = actual.has[key] === true && core.validValue(key,actual.tags[key]) ? actual.tags[key] : null;
                     var suggested = fallback.tags[key];
-                    if (value === null && actual.has[key] === false && suggested != null && FileCore.validValue(key,suggested)) {
+                    if (value === null && actual.has[key] === false && suggested != null && core.validValue(key,suggested)) {
                         suggestions[key] = suggested;
                     }
                     if (actual.has[key] === true && value === null) errors.push(actual.path + ': ' + key + ' needs review');
@@ -286,7 +286,7 @@ var FileCommands = (function () {
                 request.tracks.push(row);
                 report.progress('Exporting snapshot',request.tracks.length,chosen.length);
             });
-            FileCore.request(request);
+            core.request(request);
             saveJSON(output,request,false);
             return request.tracks;
         } catch(e) {
@@ -483,14 +483,14 @@ var FileCommands = (function () {
     }
     function validateAssetsV2(input, request, core) {
         request.tracks.forEach(function (row) {
-            var artwork = FileCore.assetPath(row,'artwork'), lyrics = FileCore.assetPath(row,'lyrics');
+            var artwork = core.assetPath(row,'artwork'), lyrics = core.assetPath(row,'lyrics');
             if (artwork) imageInfo(localAsset(input,artwork));
             if (lyrics) lyricsFile(localAsset(input,lyrics),core);
         });
     }
     function prepare(root, argv, core) {
-        var options=FileCore.prepareArgs(argv), input=absolute(options.input), out=absolute(options.output);
-        var request=FileCore.request(JSON.parse(textFile(input)));
+        var options=core.prepareArgs(argv), input=absolute(options.input), out=absolute(options.output);
+        var request=core.request(JSON.parse(textFile(input)));
         validateAssetsV2(input,request,core);
         var assets=out+'.assets';
         check(!exists(out)&&!exists(assets),'Plan or assets already exist');
@@ -503,11 +503,11 @@ var FileCommands = (function () {
                 check(!actual.error,track.path+': '+actual.error);
                 check(actual.sha256===track.sha256,'Stale snapshot: '+track.path);
                 var row={path:track.path,sha256:actual.sha256,identity:actual.identity,before:Object.assign({},actual.tags),
-                    tags:FileCore.effective(track,request.defaults,actual,options.force)};
+                    tags:core.effective(track,request.defaults,actual,options.force)};
                 if (track.music_ids && track.music_ids.length) row.music_ids=track.music_ids;
                 if (actual.artwork) row.before.artwork=actual.artwork;
                 if (actual.lyrics) row.before.lyrics=actual.lyrics;
-                var artwork=FileCore.assetPath(track,'artwork'), lyrics=FileCore.assetPath(track,'lyrics');
+                var artwork=core.assetPath(track,'artwork'), lyrics=core.assetPath(track,'lyrics');
                 if (artwork) {
                     var source=localAsset(input,artwork), img=imageInfo(source), frozen=assets+'/'+index+'.'+img.format;
                     var sourceHash=sha(source);
@@ -529,9 +529,9 @@ var FileCommands = (function () {
                 preflight(root,row,true);
                 plan.tracks.push(row);
             });
-            FileCore.plan(plan);
+            core.plan(plan);
             saveJSON(out,plan,false);
-            return FileCore.preview(plan)+'\n\nSaved: '+out;
+            return core.preview(plan)+'\n\nSaved: '+out;
         } catch(e) {remove(assets); throw e;}
     }
     function target(row, path, operation, force) {
@@ -554,6 +554,76 @@ var FileCommands = (function () {
         ['artwork','lyrics'].forEach(function(key) {
             if(row[key]) check(sha(row[key].path)===row[key].sha256,'Changed '+key+' asset for '+row.path);
         });
+    }
+    function checkWrittenPath(root,path,entry) {
+        path=musicPath(path);
+        native(root,{op:'preflight',path:path,sha256:entry.expected_sha256,
+            identity:entry.after_identity,write:false});
+        return path;
+    }
+    function locateWrittenPath(root,row,entry,getMusic) {
+        var last='path unavailable';
+        for (var attempt=0;attempt<5;attempt++) {
+            var candidates=[entry.resolved_path,row.path];
+            for (var i=0;i<candidates.length;i++) {
+                if (!candidates[i] || !exists(candidates[i])) continue;
+                try {return checkWrittenPath(root,candidates[i],entry);} catch(e) {last=label(e);}
+            }
+            if (row.music_ids && row.music_ids.length && getMusic) {
+                try {
+                    var io=getMusic();
+                    for (var j=0;j<row.music_ids.length;j++) {
+                        try {return checkWrittenPath(root,io.filePath(row.music_ids[j]),entry);}
+                        catch(e) {last=label(e);}
+                    }
+                } catch(e) {last=label(e);}
+            }
+            if (attempt<4) $.NSThread.sleepForTimeInterval(0.1);
+        }
+        throw new Error('Cannot verify written file at its current path: '+last);
+    }
+    function checkedMusicPath(root,io,id,entry) {
+        var last;
+        for (var attempt=0;attempt<5;attempt++) {
+            try {return checkWrittenPath(root,io.filePath(id),entry);}
+            catch(e) {last=label(e);}
+            if (attempt<4) $.NSThread.sleepForTimeInterval(0.1);
+        }
+        throw new Error('Music entry points to a different file or unavailable path: '+id+' ('+last+')');
+    }
+    function verifyAfterMusicArtwork(root,row,entry,io) {
+        // Music can rewrite tag bytes or atomically replace its local file.
+        // Accept replacement at the checked path, or relocation of the same inode.
+        var last='Written file unavailable after Music artwork assignment';
+        for (var attempt=0;attempt<5;attempt++) {
+            var candidates=[entry.resolved_path];
+            row.music_ids.forEach(function(id) {
+                try {candidates.push(musicPath(io.filePath(id)));} catch(_) {}
+            });
+            candidates=Array.from(new Set(candidates));
+            for (var i=0;i<candidates.length;i++) {
+                var path=candidates[i];
+                try {
+                    var actual=native(root,{op:'read',paths:[path]}).rows[0];
+                    check(!actual.error,actual.error);
+                    check(path===entry.resolved_path || actual.identity===entry.after_identity,
+                        'Music moved the file and changed its identity; recovery copy retained');
+                    var request=target(row,path,'verify',false);
+                    request.original=entry.backup;
+                    var verified=native(root,request);
+                    native(root,{op:'preflight',path:path,sha256:verified.sha256,identity:actual.identity,write:false});
+                    entry.resolved_path=path;
+                    entry.expected_sha256=verified.sha256;
+                    entry.after_sha256=verified.sha256;
+                    entry.after_identity=actual.identity;
+                    entry.music_file_verified=true;
+                    return;
+                } catch(e) {last=label(e);}
+            }
+            if (attempt<4) $.NSThread.sleepForTimeInterval(0.1);
+        }
+        entry.music_file_error=last;
+        throw new Error('File verification after Music artwork assignment failed: '+last);
     }
     function withLock(fn) {
         ObjC.bindFunction('open',['int',['char *','int']]);
@@ -579,10 +649,18 @@ var FileCommands = (function () {
             var log={version:2,kind:'music-tags-file-journal',plan_sha256:planHash,force:plan.force,status:'started',tracks:[]};
             function record() {saveJSON(journal,log,true); native(root,{op:'sync',path:journal});}
             record();
-            var io, musicAttempted=false;
+            var io, musicAttempted=false, musicError;
+            function getMusic() {
+                if (!musicAttempted) {
+                    musicAttempted=true;
+                    try {io=musicIO(core,root);} catch(e) {musicError=label(e);}
+                }
+                check(io,musicError || 'Music unavailable');
+                return io;
+            }
             for (var i=0;i<plan.tracks.length;i++) {
                 var row=plan.tracks[i], entry={path:row.path,before_sha256:row.sha256,time:new Date().toISOString(),
-                    changes:FileCore.targetSummary(row),file_status:'preflight',music_status:'not_requested'};
+                    changes:core.targetSummary(row),file_status:'preflight',music_status:'not_requested'};
                 log.tracks.push(entry);
                 try {
                     preflight(root,row);
@@ -597,6 +675,8 @@ var FileCommands = (function () {
                     record();
                     task('/bin/cp',['-p',row.path,entry.backup]);
                     check(sha(entry.backup)===row.sha256,'Backup checksum differs');
+                    native(root,{op:'restore_metadata',source:row.path,path:entry.backup,sha256:row.sha256,
+                        identity:row.identity,target_sha256:row.sha256});
                     native(root,{op:'sync',path:entry.backup});
                     task('/bin/cp',['-p',entry.backup,entry.temp]);
                     entry.file_status='writing_temp'; record();
@@ -604,22 +684,49 @@ var FileCommands = (function () {
                     var verify=target(row,entry.temp,'verify',plan.force);
                     verify.original=entry.backup;
                     entry.expected_sha256=native(root,verify).sha256;
-                    entry.file_status='committing'; record();
-                    native(root,{op:'commit',path:row.path,temp:entry.temp,sha256:row.sha256,
+                    entry.file_status='preserving_metadata'; record();
+                    native(root,{op:'restore_metadata',source:row.path,path:entry.temp,sha256:row.sha256,
                         identity:row.identity,target_sha256:entry.expected_sha256});
-                    entry.after_sha256=sha(row.path);
-                    check(entry.after_sha256===entry.expected_sha256,'Final file differs from verified temporary copy');
+                    entry.file_status='committing'; record();
+                    var committed=native(root,{op:'commit',path:row.path,temp:entry.temp,sha256:row.sha256,
+                        identity:row.identity,target_sha256:entry.expected_sha256});
+                    entry.file_written=true;
+                    entry.after_identity=committed.identity;
+                    entry.after_sha256=committed.sha256;
+                    entry.file_status='committed'; record();
+                    check(entry.after_identity && entry.after_sha256===entry.expected_sha256,
+                        'Native commit did not return the verified file identity');
+                    entry.resolved_path=locateWrittenPath(root,row,entry,getMusic);
+                    entry.file_status='verified'; record();
                     if (row.music_ids && row.music_ids.length) {
                         try {
-                            if (!musicAttempted) {musicAttempted=true; io=musicIO(core,root);}
-                            check(io,'Music unavailable');
+                            var music=getMusic();
                             row.music_ids.forEach(function (id) {
-                                check(musicPath(io.filePath(id))===musicPath(row.path),'Music entry points to a different file');
-                                io.refreshFile(id);
+                                entry.resolved_path=checkedMusicPath(root,music,id,entry);
+                                record();
+                                music.refreshFile(id);
+                                if (row.artwork) {
+                                    entry.resolved_path=checkedMusicPath(root,music,id,entry);
+                                    entry.music_artwork_status='writing';
+                                    entry.file_sha256_before_music=entry.file_sha256_before_music || entry.after_sha256;
+                                    record();
+                                    var artworkError;
+                                    try {music.replaceArtwork(id,row.artwork,entry.resolved_path);}
+                                    catch(e) {artworkError=e;}
+                                    // A failed Apple event may already have modified the file.
+                                    verifyAfterMusicArtwork(root,row,entry,music);
+                                    entry.music_artwork_status=artworkError?'failed':'verified';
+                                    record();
+                                    if (artworkError) throw artworkError;
+                                }
                             });
-                            entry.music_status=io.matchesFile(row) ? 'refreshed' : 'different_display_values';
-                        } catch(e) {entry.music_status='unavailable_or_failed'; entry.music_error=label(e);}
-                        check(sha(row.path)===entry.after_sha256,'File changed during Music refresh');
+                            entry.music_status=music.matchesFile(row) ? 'refreshed' : 'different_display_values';
+                        } catch(e) {
+                            entry.music_status='unavailable_or_failed'; entry.music_error=label(e);
+                            if (row.artwork) entry.music_artwork_status='failed';
+                        }
+                        if (entry.music_file_error) throw new Error(entry.music_file_error);
+                        entry.resolved_path=locateWrittenPath(root,row,entry,getMusic);
                     }
                     entry.file_status='verified'; record();
                     try {remove(stage); entry.cleanup='removed';}
@@ -635,15 +742,26 @@ var FileCommands = (function () {
                 }
             }
             log.status='complete';record();
-            return 'Verified: '+log.tracks.length+' files. Journal: '+journal;
+            var artworkOK=log.tracks.filter(function(e) {return e.music_artwork_status==='verified';}).length;
+            var musicFailed=log.tracks.filter(function(e) {return e.music_status==='unavailable_or_failed' || e.music_status==='different_display_values';}).length;
+            return 'Verified: '+log.tracks.length+' files.'+
+                (artworkOK?' Music artwork assigned: '+artworkOK+'.':'')+
+                (musicFailed?' Music warnings: '+musicFailed+' (see status).':'')+' Journal: '+journal;
         });
     }
     function audit(input, request) {
         var rows=request.tracks.map(function (row) {
-            return {path:row.path,missing:FileCore.fields.filter(function (key) {
+            var missing=core.fields.filter(function (key) {
                 return row.tags[key] == null && (!request.defaults || request.defaults[key] == null) &&
                     (!row.fill || row.fill[key] == null);
-            }).concat(!FileCore.assetPath(row,'artwork')?['artwork']:[],!FileCore.assetPath(row,'lyrics')&&!row.lyrics_url?['lyrics']:[])};
+            }), unknown=[];
+            ['artwork','lyrics'].forEach(function(key) {
+                if (core.assetPath(row,key) || (key==='lyrics' && row.lyrics_url)) return;
+                var state=typeof row[key]==='boolean'?row[key]:row.has && row.has[key];
+                if (state===false) missing.push(key);
+                else if (state!==true) unknown.push(key);
+            });
+            return {path:row.path,missing:missing,unknown:unknown};
         });
         return {version:2,kind:'request_completeness',input:input,tracks:rows};
     }
@@ -659,34 +777,56 @@ var FileCommands = (function () {
         if (command==='prepare') return prepare(root,argv,core);
         var input=absolute(argv[0]), value=JSON.parse(textFile(input));
         if (command==='validate') {
-            FileCore.request(value); validateAssetsV2(input,value,core);
+            core.request(value); validateAssetsV2(input,value,core);
             return 'Valid version 2 request: '+value.tracks.length+' files.';
         }
         if (command==='audit') {
-            var report=audit(input,FileCore.request(value));
+            var report=audit(input,core.request(value));
             if(argv[1]) {var output=absolute(argv[1]);mkdir(parent(output));saveJSON(output,report,false);}
             return JSON.stringify(report,null,2);
         }
         if (command==='inspect') {
-            if (value.version===2 && value.kind==='music-tags-file-plan') FileCore.plan(value);
-            else FileCore.request(value);
-            var rows=readMany(root,value.tracks.map(function(row){return row.path;}),false);
+            if (value.version===2 && value.kind==='music-tags-file-plan') core.plan(value);
+            else core.request(value);
+            var locations=new Map(), journal=input+'.journal.json', inspectMusic;
+            function getInspectMusic() {if (!inspectMusic) inspectMusic=musicIO(core,root); return inspectMusic;}
+            if (value.kind==='music-tags-file-plan' && exists(journal)) {
+                var saved=JSON.parse(textFile(journal));
+                if (saved.plan_sha256===sha(input)) saved.tracks.forEach(function(entry) {
+                    locations.set(entry.path,entry);
+                });
+            }
+            var paths=value.tracks.map(function(row) {
+                var entry=locations.get(row.path), observed=entry && entry.resolved_path || row.path;
+                if (entry && entry.after_sha256 && !exists(observed)) {
+                    try {observed=locateWrittenPath(root,row,entry,getInspectMusic);} catch(_) {}
+                }
+                return observed;
+            });
+            var rows=readMany(root,paths,false);
             return JSON.stringify({kind:'actual_file_tags',tracks:rows},null,2);
         }
-        var plan=FileCore.plan(value);
-        if (command==='preview') return FileCore.preview(plan);
+        var plan=core.plan(value);
+        if (command==='preview') return core.preview(plan);
         if (command==='status') {
             var journalPath=input+'.journal.json';
             var log=exists(journalPath)?JSON.parse(textFile(journalPath)):{status:'not_applied',tracks:[]};
             if (log.plan_sha256) log.plan_matches=log.plan_sha256===sha(input);
-            log.tracks.forEach(function(entry) {
-                if (entry.file_status!=='verified' && entry.file_status!=='unchanged') {
+            var statusMusic;
+            function getStatusMusic() {if (!statusMusic) statusMusic=musicIO(core,root); return statusMusic;}
+            log.tracks.forEach(function(entry,index) {
+                if ((entry.expected_sha256 && entry.after_sha256) || (entry.file_status!=='verified' && entry.file_status!=='unchanged')) {
                     try {
-                        var hash=sha(entry.path);
+                        var observed=entry.resolved_path || entry.path;
+                        if (entry.after_sha256 && log.plan_matches) {
+                            observed=locateWrittenPath(root,plan.tracks[index],entry,getStatusMusic);
+                        }
+                        var hash=sha(observed);
+                        entry.observed_path=observed;
                         entry.observed_sha256=hash;
                         if (entry.expected_sha256===hash && entry.before_sha256===hash) entry.observed_state='before_and_after_bytes_equal';
-                        else entry.observed_state=entry.expected_sha256===hash?'matches_verified_temp':entry.before_sha256===hash?'matches_original':'different';
-                    } catch(e) {entry.observed_state='unavailable';}
+                        else entry.observed_state=entry.expected_sha256===hash?(entry.music_file_verified?'matches_verified_music':'matches_verified_temp'):entry.before_sha256===hash?'matches_original':'different';
+                    } catch(e) {entry.observed_state='unavailable';entry.observed_error=label(e);}
                 }
             });
             return JSON.stringify(log,null,2);
@@ -694,4 +834,4 @@ var FileCommands = (function () {
         return apply(root,input,plan,core);
     }
     return {run:run};
-}());
+}(MusicCore));

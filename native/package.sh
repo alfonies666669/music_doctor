@@ -11,10 +11,11 @@ trap 'rm -rf -- "$staging"' EXIT
 name="Music-Doctor-$version-macOS-$architecture"
 release="$staging/$name"
 mkdir -p "$root/dist" "$release/bin" "$release/licenses"
-for f in music-tags jxa.js core.js filters.js file-core.js file-commands.js extract-artwork.applescript README.md NAVIGATION.md; do
+for f in music-tags jxa.js core.js legacy.js filters.js file-commands.js extract-artwork.applescript sync-artwork.applescript README.md; do
   cp "$root/$f" "$release/"
 done
 cp -R "$root/examples" "$release/"
+cp -R "$root/docs" "$release/"
 cp "$binary" "$release/bin/"
 taglib_src="$build_dir/_deps/taglib-src"
 cp "$taglib_src/COPYING.LGPL" "$release/licenses/TagLib-LGPL.txt"

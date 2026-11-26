@@ -1,7 +1,7 @@
 /* macOS-only adapter. Run with the adjacent music-tags launcher. */
 ObjC.import('Foundation');
 ObjC.import('AppKit');
-var TOOL_VERSION = '0.9.9';
+var TOOL_VERSION = '0.10.0';
 var fm = $.NSFileManager.defaultManager;
 
 function textFile(path) {
@@ -27,16 +27,30 @@ function saveJSON(path, value, replace) {
 function task(program, args) {
     var t = $.NSTask.alloc.init, pipe = $.NSPipe.pipe;
     t.launchPath = $(program); t.arguments = $(args); t.standardOutput = pipe;
-    // stderr is inherited. Draining before wait avoids a full stdout pipe deadlock.
-    t.launch;
-    var data = pipe.fileHandleForReading.readDataToEndOfFile;
-    t.waitUntilExit;
-    var output = ObjC.unwrap($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding)) || '';
-    if (t.terminationStatus !== 0) throw new Error(program + ' failed (exit ' + t.terminationStatus + ')');
-    return output;
+    // A regular stderr file cannot fill a pipe while stdout is being drained.
+    var errorPath=ObjC.unwrap($.NSTemporaryDirectory())+'music-doctor-stderr-'+ObjC.unwrap($.NSUUID.UUID.UUIDString);
+    var attrs=$.NSDictionary.dictionaryWithObjectForKey($(384),$.NSFilePosixPermissions);
+    if (!fm.createFileAtPathContentsAttributes($(errorPath),$.NSData.data,attrs)) throw new Error('Cannot capture command diagnostics');
+    var errors=$.NSFileHandle.fileHandleForWritingAtPath($(errorPath));
+    try {
+        t.standardError=errors;
+        t.launch;
+        var data=pipe.fileHandleForReading.readDataToEndOfFile;
+        t.waitUntilExit;
+        var output=ObjC.unwrap($.NSString.alloc.initWithDataEncoding(data,$.NSUTF8StringEncoding)) || '';
+        if (t.terminationStatus!==0) {
+            errors.synchronizeFile;
+            var detail=textFile(errorPath).trim().slice(-8192);
+            throw new Error(program+' failed (exit '+t.terminationStatus+')'+(detail?': '+detail:''));
+        }
+        return output;
+    } finally {
+        errors.closeFile;
+        pipe.fileHandleForReading.closeFile;
+        fm.removeItemAtPathError($(errorPath),null);
+    }
 }
 function sha(path) { return task('/usr/bin/shasum', ['-a', '256', '--', path]).slice(0, 64); }
-function norm(s) { return String(s).normalize('NFC').toLowerCase().replace(/\s+/g, ' ').trim(); }
 function imageInfo(path, expectedFormat) {
     var data = $.NSData.dataWithContentsOfFile($(path));
     if (!data || Number(data.length) > 15000000) throw new Error('Image is missing or exceeds 15 MB: ' + path);
@@ -62,69 +76,6 @@ function remoteLyrics(url, core) {
         return lyricsFile(path, core);
     } finally { if (exists(path)) fm.removeItemAtPathError($(path), null); }
 }
-function fileMetadata(path) {
-    ObjC.import('AVFoundation');
-    // Some macOS bridge metadata omits AVURLAsset; resolve its runtime class.
-    var URLAsset = $.NSClassFromString('AVURLAsset');
-    var asset = URLAsset.URLAssetWithURLOptions($.NSURL.fileURLWithPath($(path)), $());
-    var entries = [], formats = asset.availableMetadataFormats;
-    function append(items) {
-        for (var i = 0; i < Number(items.count); i++) {
-            var item = items.objectAtIndex(i), value = null, number = null, binary = null;
-            try { if (item.stringValue) value = ObjC.unwrap(item.stringValue); } catch (_) {}
-            var identifier = item.identifier ? ObjC.unwrap(item.identifier) : '';
-            try { if (item.numberValue) number = Number(ObjC.unwrap(item.numberValue)); } catch (_) {}
-            if (identifier === 'itsk/trkn' || identifier === 'itsk/disk') {
-                try { if (item.dataValue) binary = ObjC.unwrap(item.dataValue.base64EncodedStringWithOptions(0)); } catch (_) {}
-            }
-            entries.push({identifier: identifier, common_key: item.commonKey ? ObjC.unwrap(item.commonKey) : '', value: value, number_value: number, data_base64: binary});
-        }
-    }
-    append(asset.commonMetadata);
-    for (var f = 0; f < Number(formats.count); f++) append(asset.metadataForFormat(formats.objectAtIndex(f)));
-    return entries;
-}
-function verifyFile(path, values, artAdded) {
-    var entries;
-    try { entries = fileMetadata(path); }
-    catch (e) { return {ok: false, error: String(e), fields: {}}; }
-    var aliases = {
-        name: ['title', 'id3/TIT2', 'id3/TT2', 'itsk/©nam'], artist: ['artist', 'id3/TPE1', 'id3/TP1', 'itsk/©ART'],
-        album: ['albumName', 'id3/TALB', 'id3/TAL', 'itsk/©alb'], albumArtist: ['id3/TPE2', 'id3/TP2', 'itsk/aART'],
-        composer: ['id3/TCOM', 'id3/TCM', 'itsk/©wrt'], genre: ['type', 'id3/TCON', 'id3/TCO', 'itsk/©gen'],
-        year: ['creationDate', 'id3/TDRC', 'id3/TYER', 'id3/TYE', 'itsk/©day'],
-        trackNumber: ['id3/TRCK', 'id3/TRK', 'itsk/trkn'], trackCount: ['id3/TRCK', 'id3/TRK', 'itsk/trkn'],
-        discNumber: ['id3/TPOS', 'id3/TPA', 'itsk/disk'], discCount: ['id3/TPOS', 'id3/TPA', 'itsk/disk'], compilation: ['id3/TCMP', 'id3/TCP', 'itsk/cpil'],
-        lyrics: ['id3/USLT', 'id3/ULT', 'itsk/©lyr']
-    };
-    var results = {}, ok = true;
-    Object.keys(values).forEach(function (k) {
-        var found = entries.filter(function (e) { return aliases[k].indexOf(e.identifier) >= 0 || aliases[k].indexOf(e.common_key) >= 0; });
-        var candidates = found.map(function (e) {
-            var v = e.value;
-            if (v === null && typeof e.number_value === 'number') v = String(e.number_value);
-            if (e.data_base64 && /^(track|disc)(Number|Count)$/.test(k)) {
-                var alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/', bytes=[], bits=0, buffer=0;
-                e.data_base64.replace(/=+$/,'').split('').forEach(function(c){var n=alphabet.indexOf(c);if(n<0)return;buffer=(buffer<<6)|n;bits+=6;if(bits>=8){bits-=8;bytes.push((buffer>>bits)&255);}});
-                if (bytes.length>=6) return /Count$/.test(k) ? bytes[4]*256+bytes[5] : bytes[2]*256+bytes[3];
-            }
-            if (v === null) return null;
-            if (k === 'lyrics') return String(v).replace(/^\uFEFF/,'').replace(/\r\n?/g,'\n').replace(/\n+$/,'');
-            if (k === 'year') return parseInt(v, 10);
-            if (k === 'trackCount' || k === 'discCount') return parseInt(String(v).split('/')[1], 10);
-            if (k === 'trackNumber' || k === 'discNumber') return parseInt(v, 10);
-            if (k === 'compilation') return v === '1' || v === 'true';
-            return v;
-        });
-        var matched = candidates.some(function (v) { return v === values[k]; });
-        results[k] = {expected: values[k], observed: candidates, verified: matched}; if (!matched) ok = false;
-    });
-    if (artAdded) {
-        results.artwork = {verified: entries.some(function (e) { return e.common_key === 'artwork' || e.identifier === 'id3/APIC' || e.identifier === 'id3/PIC' || e.identifier === 'itsk/covr'; })};
-        if (!results.artwork.verified) ok = false;
-    }
-    return {ok: ok, fields: results, reader: 'AVFoundation (direct file, not Spotlight)'};
-}
 function musicIO(core, root) {
     var music = Application('/System/Applications/Music.app');
     var library = music.libraryPlaylists[0];
@@ -133,19 +84,6 @@ function musicIO(core, root) {
         var matches = library.fileTracks.whose({persistentID: core.id(pid)})();
         if (matches.length !== 1) throw new Error('Local file track not found or not unique: ' + pid);
         return matches[0];
-    }
-    function snapshot(pid, withHash) {
-        var t = track(pid), location = t.location();
-        if (!location) throw new Error('Track has no local file: ' + pid);
-        var path = String(location);
-        if (!/\.(mp3|m4a)$/i.test(path) || !exists(path) || /protected|Apple Music/i.test(t.kind())) throw new Error('Only accessible, unprotected local MP3/M4A: ' + pid);
-        var values = {};
-        Object.keys(core.fields).forEach(function (k) { values[k] = t[k](); });
-        var fileEntries = fileMetadata(path);
-        var embedded = fileEntries.some(function(e) { return e.common_key === 'artwork' || /id3\/(APIC|PIC)|itsk\/covr/.test(e.identifier); });
-        var fileLyrics = fileEntries.filter(function(e) { return /^(id3\/(USLT|ULT)|itsk\/©lyr)$/.test(e.identifier) && typeof e.value === 'string' && e.value.trim(); });
-        values.lyrics = core.normalizeLyrics(values.lyrics || (fileLyrics.length ? fileLyrics[0].value : ''));
-        return {metadata: values, path: path, sha256: withHash === false ? null : sha(path), duration: t.duration(), artwork_count: t.artworks.length, file_artwork_present: embedded};
     }
     function scopeTracks(scope) {
         if (scope.kind === 'all') return library.tracks;
@@ -185,24 +123,7 @@ function musicIO(core, root) {
         return rows;
     }
     return {
-        libraryID: function () { return core.id(library.persistentID()); },
-        snapshot: snapshot,
-        capture: function (pid) { return snapshot(pid, false); },
-        writeField: function (pid, k, v) { track(pid)[k] = v; },
-        readField: function (pid, k) { var value=track(pid)[k]();return k==='lyrics'?core.normalizeLyrics(value):value; },
         checkArtwork: function (a) { if (!exists(a.path) || sha(a.path) !== a.sha256) throw new Error('Artwork changed or missing: ' + a.path); imageInfo(a.path, a.format); },
-        addArtwork: function (pid, a) { this.checkArtwork(a); task('/usr/bin/osascript', [root + '/artwork.applescript', pid, a.path, a.format, a.policy || 'missing']); },
-        verifyFile: verifyFile,
-        playlist: function (name) {
-            if (name === '--all') return library.tracks.persistentID();
-            var p = music.playlists.whose({name: name})();
-            if (p.length !== 1) throw new Error('Playlist name must identify exactly one playlist');
-            return p[0].tracks.persistentID();
-        },
-        genre: function (name) {
-            // Bulk reads avoid one Apple event per library track just to filter it.
-            return core.genreIDs(library.tracks.persistentID(), library.tracks.genre(), name);
-        },
         candidates: function (selection, filters) {
             var tracks = scopeTracks(selection.scope), ids = tracks.persistentID();
             var needed = filters.fields(selection.filter);
@@ -224,11 +145,6 @@ function musicIO(core, root) {
             var after = tracks.persistentID();
             if (after.length !== ids.length || ids.some(function (pid, index) { return pid !== after[index]; })) throw new Error('Library order changed while reading filters; take a new snapshot');
             return {rows: rows, favorite_property: favorites.property};
-        },
-        favorite: function (pid, property) {
-            if (!property) return null;
-            var value = track(pid)[property]();
-            return typeof value === 'boolean' ? value : null;
         },
         filePaths: filePaths,
         filePath: function (pid) {
@@ -275,6 +191,18 @@ function musicIO(core, root) {
             return exists(path);
         },
         refreshFile: function (pid) {music.refresh(track(pid));},
+        replaceArtwork: function (pid, artwork, expectedPath) {
+            this.checkArtwork(artwork);
+            var format=imageInfo(artwork.path).format;
+            task('/usr/bin/osascript',[root+'/sync-artwork.applescript',core.id(pid),artwork.path,format,expectedPath]);
+            var dir=ObjC.unwrap($.NSTemporaryDirectory())+'music-doctor-artwork-'+ObjC.unwrap($.NSUUID.UUID.UUIDString);
+            mkdir(dir);
+            try {
+                var exported=dir+'/cover';
+                task('/usr/bin/osascript',[root+'/extract-artwork.applescript',core.id(pid),exported]);
+                if (sha(exported)!==artwork.sha256) throw new Error('Music artwork readback differs: '+pid);
+            } finally {fm.removeItemAtPathError($(dir),null);}
+        },
         matchesFile: function (row) {
             return row.music_ids.every(function (pid) {
                 var t = track(pid);
@@ -296,8 +224,7 @@ function usage() {
         '  ./music-tags snapshot --folder PATH [--recursive] [--music] [filters] [request.json]\n' +
         '  ./music-tags snapshot [--music] [--playlist "Playlist name" | --all] [filters] [request.json]\n' +
         '  ./music-tags snapshot --genre "Custom Genre" [request.json]\n' +
-        '  ./music-tags snapshot --artist \'Bushido OR Fler\'\n' +
-        '  ./music-tags snapshot --artist \'Bushido OR Fler\' request.json\n' +
+        '  ./music-tags snapshot --artist \'Artist A OR Artist B\' request.json\n' +
         '  ./music-tags snapshot --help\n' +
         '  ./music-tags audit request-or-snapshot.json [report.json]\n' +
         '  ./music-tags validate request.json\n' +
@@ -306,14 +233,14 @@ function usage() {
         '  ./music-tags apply runs/plan.json\n' +
         '  ./music-tags status runs/plan.json\n' +
         '  ./music-tags inspect request-or-plan.json\n' +
-        'Only apply writes music. No snapshot output path = console preview; with a path = editable request.\nPrepare checks write compatibility; changed ID3v2.2 files are planned for v2.3 migration.\nThe request can link to local artwork and lyrics assets.';
+        'Workflow: snapshot -> edit request JSON -> prepare -> preview -> apply -> status.\nOnly apply writes audio files. No snapshot path = console preview; a path = editable request.\nApply reports file verification and Music updates separately. See README.md for the complete workflow.';
 }
 function snapshotUsage() {
     return 'Snapshot selection (read-only):\n' +
         '  ./music-tags snapshot ["Playlist" | --playlist "Playlist" | --all] [filters] [output.json]\n' +
         '  No output path: fast console preview; file tags are read without full hashes.\n' +
         '  With output path: editable request JSON, short summary, and live <output>.log.\n' +
-        '  See examples/README.md for editing the generated request.\n' +
+        '  See README.md for the workflow and docs/reference.md for request fields.\n' +
         '  --folder PATH [--recursive]   Scan local audio files without Music\n' +
         '  --music                 Use the catalog or enrich an explicit folder\n' +
         '  --has EXPR              artwork=false: missing from the file and Music\n' +
@@ -330,86 +257,10 @@ function snapshotUsage() {
         '  --show N|all             Show track rows (default 20 for preview, none for export)\n' +
         'Different flags combine with AND. Without a playlist, search the whole library.\n' +
         'Inside text arguments: uppercase AND / OR / NOT, && / || / !, parentheses.\n' +
-        'Precedence: NOT > AND > OR. "Bushido NOT Fler" means "Bushido AND NOT Fler".\n' +
+        'Precedence: NOT > AND > OR. "Artist A NOT Artist B" means "Artist A AND NOT Artist B".\n' +
         'Quote the WHOLE expression for the shell; double-quote literal terms inside it.\n' +
         'Text matching ignores case; operator keywords must be UPPERCASE.\n' +
-        'Example: ./music-tags snapshot --genre "German Hip-Hop" --artist \'Bushido AND NOT Fler\' out.json';
-}
-function selectSnapshot(selection, io, filters) {
-    var navigation = io.candidates(selection, filters), seen = {}, unknown = 0;
-    var candidates = navigation.rows.filter(function (row) {
-        if (seen[row.id]) return false; seen[row.id] = true;
-        var result = filters.evaluate(selection.filter, row);
-        if (result === null) unknown++;
-        return result === true;
-    });
-    candidates = filters.sort(candidates, selection.sort_by, selection.descending);
-    return {rows: candidates, favorite_property: navigation.favorite_property, unknown_excluded: unknown};
-}
-function collectSnapshot(selection, io, core, filters, navigation) {
-    navigation = navigation || selectSnapshot(selection, io, filters);
-    var candidates = navigation.rows, rows = [];
-    var required = filters.fields(selection.filter);
-    candidates.forEach(function (candidate, index) {
-        var pid = candidate.id;
-        if (index % 25 === 0) console.log('Reading ' + (index + 1) + '/' + candidates.length);
-        try {
-            var state = io.capture ? io.capture(pid) : io.snapshot(pid), fresh = {};
-            Object.keys(state.metadata).forEach(function (k) { fresh[k] = state.metadata[k]; });
-            fresh.duration = state.duration;
-            fresh.favorite = required.indexOf('favorite') >= 0 ? io.favorite(pid, navigation.favorite_property) : candidate.favorite;
-            if (filters.evaluate(selection.filter, fresh) !== true) throw new Error('Filter fields changed while reading; take a new snapshot');
-            var saved = {};
-            Object.keys(state).forEach(function (k) { saved[k] = state[k]; });
-            saved.favorite = fresh.favorite;
-            rows.push({id: pid, snapshot: saved});
-        } catch (e) { rows.push({id: pid, error: String(e.message || e)}); }
-    });
-    var result = {version: 1, library_playlist_id: io.libraryID(), created_at: new Date().toISOString(),
-        selection: {kind: selection.kind, value: selection.value, scope: selection.scope, filter: selection.filter,
-            sort_by: selection.sort_by, descending: selection.descending, unknown_excluded: navigation.unknown_excluded},
-        favorite_property: navigation.favorite_property, tracks: rows};
-    if (selection.kind === 'genre') result.genre = selection.value;
-    else if (selection.kind === 'all' || selection.scope.kind === 'playlist') result.playlist = selection.scope.value;
-    return result;
-}
-function snapshotCommand(selection, io, core, filters) {
-    var destination = selection.output ? absolute(selection.output) : null;
-    if (destination && exists(destination)) throw new Error('Output already exists; choose a new request filename');
-    var navigation = selectSnapshot(selection, io, filters);
-    var summary = core.snapshotInfo(navigation.rows, selection.show_limit);
-    if (navigation.unknown_excluded) summary += '\nExcluded because required filter data was unavailable: ' + navigation.unknown_excluded;
-    if (!destination) return summary + '\nConsole preview only. No files created; no Music fields changed.';
-    if (!navigation.rows.length) return summary + '\nNo matches. No file created; no Music fields changed.';
-    var data = collectSnapshot(selection, io, core, filters, navigation);
-    var request = core.editableSnapshot(data);
-    mkdir(ObjC.unwrap($(destination).stringByDeletingLastPathComponent));
-    saveJSON(destination, request, false);
-    return summary + '\nSaved editable request: ' + destination + '\nEdit set values; null means leave unchanged. No Music fields changed.';
-}
-function auditPreview(report) {
-    var a = report.artwork, out = ['Music Doctor audit — ' + report.total + ' records; readable: ' + report.readable + '; errors: ' + report.errors.length,
-        'Embedded artwork: ' + a.embedded + '; missing: ' + a.missingEmbedded + '; unknown: ' + a.unknownEmbedded,
-        'Artwork in Music: ' + a.inMusic + '; missing: ' + a.missingInMusic + '; unknown: ' + a.unknownInMusic,
-        'Lyrics: ' + report.lyrics.present + '; missing: ' + report.lyrics.missing + '; unknown: ' + report.lyrics.unknown,
-        '\nMissing metadata (readable records only):'];
-    if (report.basis === 'request') out.splice(1, 0, 'Editable request: metadata uses draft values; media/lyrics status is from info at export.');
-    var gaps = Object.keys(report.missing).filter(function (k) { return report.missing[k] > 0; });
-    gaps.forEach(function (k) { out.push('  ' + k + ': ' + report.missing[k]); });
-    if (!gaps.length) out.push('  None.');
-    if (report.issues.length) out.push('\nTracks to review:');
-    report.issues.forEach(function (t) {
-        var issues = t.missing.slice();
-        if (t.artworkInFile === false) issues.push('embedded artwork missing');
-        if (t.artworkInFile === null) issues.push('embedded artwork unknown');
-        if (t.artworkInMusic === false) issues.push('Music artwork missing');
-        if (t.artworkInMusic === null) issues.push('Music artwork unknown');
-        if (t.lyrics !== true) issues.push(t.lyrics === null ? 'lyrics unknown' : 'lyrics missing');
-        out.push('  ' + t.artist + ' — ' + t.name + ' [' + t.id + ']: ' + issues.join(', '));
-    });
-    report.errors.forEach(function (e) { out.push('  ERROR [' + e.id + ']: ' + e.error); });
-    out.push('\nPresence check only; metadata correctness and cover quality are not verified.');
-    return out.join('\n');
+        'Example: ./music-tags snapshot --genre "Custom Genre" --artist \'Artist A AND NOT Artist B\' out.json';
 }
 function validateAssets(request, requestPath, core) {
     request.tracks.forEach(function(t) {
@@ -422,52 +273,8 @@ function validateAssets(request, requestPath, core) {
         if(t.lyrics_file) lyricsFile(relativeFile(requestPath,t.lyrics_file),core);
     });
 }
-function prepareRequest(request, requestPath, output, io, core) {
-    var assets=output+'.assets';
-    if(exists(output)||exists(assets)) throw new Error('Output already exists; choose a new plan filename');
-    mkdir(ObjC.unwrap($(output).stringByDeletingLastPathComponent));
-    mkdir(assets);
-    var plan={version:1,kind:'music-tags-plan',created_at:new Date().toISOString(),library_id:io.libraryID(),tracks:[]};
-    try {
-        request.tracks.forEach(function(original,index) {
-            var t=JSON.parse(JSON.stringify(original)),pid=core.id(t.id);
-            console.log('Preparing '+(index+1)+'/'+request.tracks.length+' ['+pid+']');
-            try {
-                var before=io.snapshot(pid);
-                if((t.lyrics_file||t.lyrics_url) && (!before.metadata.lyrics.trim()||t.lyrics_policy==='replace')) {
-                    var lyrics=t.lyrics_file?lyricsFile(relativeFile(requestPath,t.lyrics_file),core):remoteLyrics(t.lyrics_url,core);
-                    var mode=t.lyrics_policy==='replace'?'set':'fill';
-                    t[mode]=t[mode]||{};t[mode].lyrics=lyrics;
-                    if(t.lyrics_url){t.sources=t.sources||[];if(t.sources.indexOf(t.lyrics_url)<0)t.sources.push(t.lyrics_url);}
-                }
-                var updates=core.changes(t,before.metadata,request.defaults||{}),cover=null;
-                if(t.artwork_file && !before.file_artwork_present) {
-                    if(before.artwork_count>1) throw new Error('Multiple Music pictures; review manually');
-                    var local=typeof t.artwork_file==='string'?{path:t.artwork_file}:t.artwork_file;
-                    var albumName=updates.album||before.metadata.album;
-                    if(local.album && norm(local.album)!==norm(albumName)) throw new Error('Artwork album does not match target album');
-                    var sourcePath=relativeFile(requestPath,local.path),info=imageInfo(sourcePath,local.format),hash=sha(sourcePath);
-                    if(local.sha256 && local.sha256!==hash) throw new Error('Artwork checksum mismatch');
-                    var copy=assets+'/'+pid+'.'+info.format;
-                    task('/bin/cp',[sourcePath,copy]);
-                    if(sha(copy)!==hash) throw new Error('Artwork changed while copying');
-                    cover={path:copy,sha256:hash,format:info.format,policy:'embed_missing'};
-                    if(local.source_url)cover.source_url=local.source_url;
-                }
-                plan.tracks.push({id:pid,before:before,set:updates,artwork:cover,sources:t.sources||[]});
-            } catch(e) { throw new Error('Track '+pid+': '+String(e.message||e)); }
-        });
-        core.validatePlan(plan);
-        saveJSON(output,plan,false);
-        return core.preview(plan)+'\n\nSaved: '+output+'\nNo Music fields changed.';
-    } catch(e) {
-        // This directory was created by this invocation; never remove user data.
-        fm.removeItemAtPathError($(assets),null);
-        throw e;
-    }
-}
 function run(argv) {
-    var root=argv.shift(), core=eval(textFile(root+'/core.js')+'\nMusicMVP;'), command=argv.shift();
+    var root=argv.shift(), core=eval(textFile(root+'/core.js')+'\nMusicCore;'), command=argv.shift();
     if(!command || command==='help' || command==='--help') return usage();
     if(command==='--version' || command==='version') return TOOL_VERSION;
     if(command==='snapshot' && argv.length===1 && (argv[0]==='--help' || argv[0]==='-h')) return snapshotUsage();
@@ -477,21 +284,22 @@ function run(argv) {
     if(['validate','audit','preview','status','apply','inspect'].indexOf(command)>=0) {
         var input=absolute(argv[0]), value=JSON.parse(textFile(input));
         if (value.version===1) {
+            var legacy=eval(textFile(root+'/legacy.js')+'\nLegacy;');
             if (command==='audit') {
-                var report=core.auditSnapshot(value);
+                var report=legacy.auditSnapshot(value);
                 if (argv[1]) {
                     var output=absolute(argv[1]);
                     mkdir(ObjC.unwrap($(output).stringByDeletingLastPathComponent)); saveJSON(output,report,false);
                 }
-                return auditPreview(report);
+                return legacy.auditPreview(report);
             }
             if (command==='validate') {
-                core.validateRequest(value); validateAssets(value,input,core);
+                legacy.validateRequest(value); validateAssets(value,input,core);
                 return 'Valid legacy request version 1. Export a version 2 snapshot before writing.';
             }
-            if (command==='preview') return core.preview(value);
+            if (command==='preview') return legacy.preview(value);
             if (command==='status') {
-                core.validatePlan(value);
+                legacy.validatePlan(value);
                 var legacyJournal=input+'.journal.json';
                 return exists(legacyJournal) ? textFile(legacyJournal) : JSON.stringify({status:'not_applied',total:value.tracks.length},null,2);
             }
@@ -499,7 +307,6 @@ function run(argv) {
         }
     }
     var filters = command==='snapshot' ? eval(textFile(root+'/filters.js')+'\nMusicFilters;') : null;
-    var FileCore=eval(textFile(root+'/file-core.js')+'\nFileCore;');
     var files=eval(textFile(root+'/file-commands.js')+'\nFileCommands;');
     return files.run(root,command,argv,core,filters);
 }

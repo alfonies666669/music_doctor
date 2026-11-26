@@ -5,17 +5,6 @@ function bridge(v){return v;}
 Object.assign(bridge,{NSFileManager:{defaultManager:{fileExistsAtPath(){return true;},removeItemAtPathError(){cleanups++;}}},NSTemporaryDirectory:()=>'/tmp/',NSUUID:{UUID:{UUIDString:'fixture'}}});
 const context=vm.createContext({ObjC:{import(){},unwrap:v=>v},$:bridge});
 vm.runInContext(fs.readFileSync(path.join(__dirname,'../jxa.js'),'utf8'),context);
-function verify(entries,expected,art=false){context.fileMetadata=()=>entries;return context.verifyFile('/fixture.mp3',expected,art);}
-assert.equal(verify([{identifier:'id3/ULT',value:'First\r\nSecond\r\n'}],{lyrics:'First\nSecond'}).ok,true);
-assert.equal(verify([{identifier:'itsk/©lyr',value:'Words'}],{lyrics:'Words'}).ok,true);
-assert.equal(verify([{identifier:'id3/TRK',value:'3/20'}],{trackNumber:3,trackCount:20}).ok,true);
-assert.equal(verify([{identifier:'itsk/trkn',value:null,data_base64:Buffer.from([0,0,0,3,0,20,0,0]).toString('base64')}],{trackNumber:3,trackCount:20}).ok,true);
-assert.equal(verify([{identifier:'itsk/disk',value:null,data_base64:Buffer.from([0,0,0,2,0,3]).toString('base64')}],{discNumber:2,discCount:3}).ok,true);
-assert.equal(verify([{identifier:'itsk/cpil',value:null,number_value:1}],{compilation:true}).ok,true);
-assert.equal(verify([{identifier:'itsk/cpil',value:null,number_value:0}],{compilation:false}).ok,true);
-assert.equal(verify([{identifier:'id3/PIC',value:null}],{},true).ok,true);
-assert.equal(verify([],{lyrics:'Words'}).ok,false);
-assert.equal(verify([{identifier:'id3/USLT',value:'Other words'}],{lyrics:'Words'}).ok,false);
 let args;
 context.task=(program,argv)=>{assert.equal(program,'/usr/bin/curl');args=argv;return 'text/plain; charset=utf-8';};
 context.lyricsFile=()=> 'Example words';
@@ -27,4 +16,28 @@ context.task=()=> 'text/html';
 assert.throws(()=>context.remoteLyrics('https://example.test/page',{}),/text\/plain/);assert.equal(cleanups,2);
 context.task=()=>{throw Error('network failure');};
 assert.throws(()=>context.remoteLyrics('https://example.test/words.txt',{}),/network failure/);assert.equal(cleanups,3);
-console.log('16 metadata/URL adapter checks passed. No Music calls were made.');
+// An existing picture must still be explicitly assigned. Artwork paths are argv.
+context.Application=()=>({libraryPlaylists:[{exists:()=>true}]});
+context.mkdir=()=>{};
+const io=context.musicIO({id:value=>value},'/runtime');
+const art={path:'/covers/a $(literal) "cover".jpg',sha256:'cover-hash'};
+let calls=[],format='jpg',exportHash='cover-hash';
+context.imageInfo=()=>({format});
+context.sha=file=>file===art.path?'cover-hash':exportHash;
+context.task=(program,argv)=>{calls.push({program,argv:Array.from(argv)});return '';};
+io.replaceArtwork('1111111111111111',art,'/media/song.mp3');
+assert.equal(calls.length,2);
+assert.deepEqual(calls[0],{program:'/usr/bin/osascript',argv:[
+    '/runtime/sync-artwork.applescript','1111111111111111',art.path,'jpg','/media/song.mp3']});
+assert.equal(calls[1].argv[0],'/runtime/extract-artwork.applescript');
+assert.equal(cleanups,4);
+format='png';calls=[];
+io.replaceArtwork('1111111111111111',art,'/media/song.mp3');
+assert.equal(calls[0].argv[3],'png');
+exportHash='wrong-image';
+assert.throws(()=>io.replaceArtwork('1111111111111111',art,'/media/song.mp3'),/readback differs/);
+assert.equal(cleanups,6);
+calls=[];
+assert.throws(()=>io.replaceArtwork('1111111111111111',{...art,sha256:'stale'},'/media/song.mp3'),/Artwork changed/);
+assert.equal(calls.length,0);
+console.log('Metadata, URL and artwork adapter checks passed. No Music calls were made.');

@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {spawnSync} = require('node:child_process');
 const {createHash} = require('node:crypto');
-const core = require('../file-core');
+const core = require('../core');
 const root = path.resolve(__dirname, '..');
 const helper = path.join(root, 'bin/music-tags-file');
 function run(bin, args, input) {
@@ -86,6 +86,9 @@ test('ID3v2.2 migration preserves audio, comments, custom fields, lyrics and bac
     assert.match(cli('prepare',request,noop),/No changes/);
     assert.equal(json(noop).tracks[0].id3_migration,undefined);
     cli('apply',noop);
+    const noopStatus=JSON.parse(cli('status',noop)).tracks[0];
+    assert.equal(noopStatus.file_status,'unchanged');
+    assert.notEqual(noopStatus.observed_state,'unavailable');
     assert.equal(sha(file),initial);
     const forced=path.join(dir,'forced.json');
     assert.match(cli('prepare',request,forced,'--force','true'),/ID3v2.2 → ID3v2.3/);
@@ -138,7 +141,7 @@ test('failed temporary migration retains original bytes and recovery copy', {
     t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
     const file=fixture(dir), initial=sha(file), runtime=path.join(dir,'runtime');
     fs.mkdirSync(path.join(runtime,'bin'),{recursive:true});
-    for (const name of ['music-tags','jxa.js','core.js','filters.js','file-core.js','file-commands.js'])
+    for (const name of ['music-tags','jxa.js','core.js','filters.js','file-commands.js'])
         fs.copyFileSync(path.join(root,name),path.join(runtime,name));
     fs.copyFileSync(helper,path.join(runtime,'bin/music-tags-file'));
     const commands=path.join(runtime,'file-commands.js');
