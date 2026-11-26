@@ -1,7 +1,7 @@
 /* macOS-only adapter. Run with the adjacent music-tags launcher. */
 ObjC.import('Foundation');
 ObjC.import('AppKit');
-var TOOL_VERSION = '0.9.8';
+var TOOL_VERSION = '0.9.9';
 var fm = $.NSFileManager.defaultManager;
 
 function textFile(path) {
@@ -306,7 +306,7 @@ function usage() {
         '  ./music-tags apply runs/plan.json\n' +
         '  ./music-tags status runs/plan.json\n' +
         '  ./music-tags inspect request-or-plan.json\n' +
-        'Only apply writes music. No snapshot output path = console preview; with a path = editable request.\nThe request can link to local artwork and lyrics assets.';
+        'Only apply writes music. No snapshot output path = console preview; with a path = editable request.\nPrepare checks write compatibility; changed ID3v2.2 files are planned for v2.3 migration.\nThe request can link to local artwork and lyrics assets.';
 }
 function snapshotUsage() {
     return 'Snapshot selection (read-only):\n' +

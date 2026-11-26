@@ -50,3 +50,8 @@
 # User requests, audio assets and generated runs stay outside source control.
 /runs/
 /local/
+
+# Native builds and personal pilot bundles
+/build/
+/dist/
+/music-artwork-apply-*/
